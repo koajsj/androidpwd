@@ -21,23 +21,28 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -54,6 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -112,6 +118,7 @@ fun PasswordListScreen(
     val tags by viewModel.biaoqianLiebiao.collectAsStateWithLifecycle()
     val activeTag by viewModel.dangqianBiaoqian.collectAsStateWithLifecycle()
     val vaultName by viewModel.mimakuMingcheng.collectAsStateWithLifecycle()
+    val vaults by viewModel.vaults.collectAsStateWithLifecycle()
     val errorMessage by viewModel.cuowuXinxi.collectAsStateWithLifecycle()
     val selectedIds by viewModel.selectedIds.collectAsStateWithLifecycle()
     val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
@@ -128,6 +135,11 @@ fun PasswordListScreen(
     var showPasteImport by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
+    var showVaultPicker by remember { mutableStateOf(false) }
+    var showCreateVault by remember { mutableStateOf(false) }
+    var showRenameVault by remember { mutableStateOf(false) }
+    var confirmVaultDelete by remember { mutableStateOf(false) }
+    var vaultNameDraft by remember { mutableStateOf("") }
 
     // While selecting, the system back button exits selection instead of leaving the screen.
     BackHandler(enabled = selectionMode) { viewModel.clearSelection() }
@@ -282,7 +294,15 @@ fun PasswordListScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(vaultName.ifEmpty { "我的密码" }, fontWeight = FontWeight.Bold) },
+                    title = {
+                        TextButton(
+                            onClick = { showVaultPicker = true },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(vaultName.ifEmpty { "我的密码" }, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Filled.ArrowDropDown, contentDescription = "切换密码库")
+                        }
+                    },
                     actions = {
                         Box {
                             IconButton(onClick = { showSort = true }) {
@@ -421,6 +441,165 @@ fun PasswordListScreen(
                 }
             }
         }
+    }
+
+    if (showVaultPicker) {
+        AlertDialog(
+            onDismissRequest = { showVaultPicker = false },
+            title = { Text("密码库") },
+            text = {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "选择要查看的密码库。每个密码库的数据独立保存。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    vaults.forEach { vault ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    viewModel.qiehuanMimaku(vault.id)
+                                    showVaultPicker = false
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = vault.id == viewModel.dangqianMimakuId(),
+                                onClick = {
+                                    viewModel.qiehuanMimaku(vault.id)
+                                    showVaultPicker = false
+                                }
+                            )
+                            Text(
+                                vault.name,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = {
+                        showVaultPicker = false
+                        vaultNameDraft = ""
+                        showCreateVault = true
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Spacer(Modifier.size(6.dp))
+                        Text("新建密码库")
+                    }
+                    TextButton(
+                        onClick = {
+                            showVaultPicker = false
+                            vaultNameDraft = vaultName
+                            showRenameVault = true
+                        },
+                        enabled = vaultName.isNotBlank()
+                    ) {
+                        Icon(Icons.Filled.Edit, contentDescription = null)
+                        Spacer(Modifier.size(6.dp))
+                        Text("重命名当前密码库")
+                    }
+                    TextButton(
+                        onClick = {
+                            showVaultPicker = false
+                            confirmVaultDelete = true
+                        },
+                        enabled = vaults.size > 1,
+                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = null)
+                        Spacer(Modifier.size(6.dp))
+                        Text(if (vaults.size > 1) "删除当前密码库" else "至少保留一个密码库")
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showVaultPicker = false }) { Text("完成") } }
+        )
+    }
+
+    if (showCreateVault || showRenameVault) {
+        val creating = showCreateVault
+        AlertDialog(
+            onDismissRequest = {
+                showCreateVault = false
+                showRenameVault = false
+            },
+            title = { Text(if (creating) "新建密码库" else "重命名密码库") },
+            text = {
+                Column {
+                    Text(
+                        if (creating) "创建后会自动切换到新密码库。" else "仅修改显示名称，不影响其中的密码数据。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = vaultNameDraft,
+                        onValueChange = { vaultNameDraft = it.take(40) },
+                        label = { Text("密码库名称") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val action: ((Boolean, String?) -> Unit) -> Unit = if (creating) {
+                        { callback -> viewModel.xinjianMimaku(vaultNameDraft, callback) }
+                    } else {
+                        { callback -> viewModel.chongmingmingMimaku(vaultNameDraft, callback) }
+                    }
+                    action { success, message ->
+                        if (success) {
+                            showCreateVault = false
+                            showRenameVault = false
+                            toast(if (creating) "已创建密码库" else "已重命名密码库")
+                        } else {
+                            toast(message ?: "操作失败")
+                        }
+                    }
+                }, enabled = vaultNameDraft.isNotBlank()) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showCreateVault = false
+                    showRenameVault = false
+                }) { Text("取消") }
+            }
+        )
+    }
+
+    if (confirmVaultDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmVaultDelete = false },
+            title = { Text("删除“${vaultName.ifBlank { "当前密码库" }}”吗？") },
+            text = {
+                Text(
+                    "其中的所有密码、回收站项目和密码历史都会永久删除，无法恢复。将自动切换到另一个密码库。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.shanchuDangqianMimaku { success, message ->
+                        confirmVaultDelete = false
+                        toast(if (success) "已删除密码库" else (message ?: "删除失败"))
+                    }
+                }) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmVaultDelete = false }) { Text("取消") } }
+        )
     }
 
     if (importJsonPasswordPrompt) {

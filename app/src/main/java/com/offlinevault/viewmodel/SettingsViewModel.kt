@@ -208,12 +208,16 @@ class SettingsViewModel(
 
     /** Builds an ENCRYPT cipher to enable biometric unlock. Null if Keystore key creation failed. */
     fun prepareEnableBiometricCipher(onReady: (Cipher?) -> Unit) {
-        val cipher = try {
-            KeystoreManager.deleteKey() // start fresh so enrollment changes don't haunt us
-            KeystoreManager.encryptCipher()
-        } catch (e: Exception) {
-            null
-        }
+        // Do not delete a working key before the user actually completes the system prompt.
+        // Otherwise cancelling a re-enable attempt would silently break an already usable
+        // biometric unlock. Enrollment changes already invalidate the key at the Keystore level;
+        // only rebuild when the existing material can no longer initialise a Cipher.
+        val cipher = runCatching { KeystoreManager.encryptCipher() }
+            .recoverCatching {
+                KeystoreManager.deleteKey()
+                KeystoreManager.encryptCipher()
+            }
+            .getOrNull()
         onReady(cipher)
     }
 

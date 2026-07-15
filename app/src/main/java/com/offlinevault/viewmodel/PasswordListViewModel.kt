@@ -9,6 +9,7 @@ import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.data.repository.VaultDeleteResult
 import com.offlinevault.data.repository.VaultRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 
 /** List ordering options. Favorites always pin above these. */
 enum class SortOrder { UPDATED, TITLE, STRENGTH }
@@ -71,6 +73,14 @@ class PasswordListViewModel(
     private val _mimakuMingcheng = MutableStateFlow("")
     val mimakuMingcheng: StateFlow<String> = _mimakuMingcheng.asStateFlow()
 
+    /** All vaults for the switcher. Their names are decrypted only while the session is unlocked. */
+    val vaults = mimakuCangku.allVaults()
+        .catch { yichang ->
+            if (yichang is CancellationException) throw yichang
+            emit(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _cuowuXinxi = MutableStateFlow<String?>(null)
     val cuowuXinxi: StateFlow<String?> = _cuowuXinxi.asStateFlow()
 
@@ -80,6 +90,10 @@ class PasswordListViewModel(
     private val paixu = MutableStateFlow(SortOrder.UPDATED)
     val sortOrder: StateFlow<SortOrder> = paixu.asStateFlow()
     fun setSortOrder(order: SortOrder) { paixu.value = order }
+
+    // Vault mutations are destructive or change the active destination. Keep them serial so a
+    // rapid double-tap cannot create duplicate vaults or race a deletion against a rename.
+    private var vaultMutationJob: Job? = null
 
     private data class ListQuery(val kuId: String, val query: String, val tag: String?, val sort: SortOrder)
 
@@ -183,6 +197,122 @@ class PasswordListViewModel(
                 throw e
             } catch (_: Exception) {
                 _cuowuXinxi.value = "无法打开密码库，请重新锁定后再试"
+            }
+        }
+    }
+
+    fun qiehuanMimaku(vaultId: String) {
+        if (vaultId == mimakuId.value) return
+        viewModelScope.launch {
+            try {
+                val vault = mimakuCangku.getById(vaultId) ?: run {
+                    _cuowuXinxi.value = "未找到密码库"
+                    return@launch
+                }
+                mimakuId.value = vault.id
+                _mimakuMingcheng.value = vault.name
+                biaoqianGuolv.value = null
+                xuanzhong.value = emptySet()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _cuowuXinxi.value = "无法切换密码库"
+            }
+        }
+    }
+
+    fun xinjianMimaku(name: String, onResult: (Boolean, String?) -> Unit) {
+        if (vaultMutationJob?.isActive == true) return
+        val normalized = name.trim()
+        if (normalized.isEmpty()) {
+            onResult(false, "请输入密码库名称")
+            return
+        }
+        if (normalized.length > VaultRepository.MAX_NAME_LENGTH) {
+            onResult(false, "名称不能超过 ${VaultRepository.MAX_NAME_LENGTH} 个字符")
+            return
+        }
+        vaultMutationJob = viewModelScope.launch {
+            try {
+                if (mimakuCangku.allOnce().any { it.name.equals(normalized, ignoreCase = true) }) {
+                    onResult(false, "已存在同名密码库")
+                    return@launch
+                }
+                val vault = mimakuCangku.create(normalized, "lock")
+                mimakuId.value = vault.id
+                _mimakuMingcheng.value = vault.name
+                biaoqianGuolv.value = null
+                xuanzhong.value = emptySet()
+                onResult(true, null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onResult(false, "无法创建密码库")
+            }
+        }
+    }
+
+    fun chongmingmingMimaku(name: String, onResult: (Boolean, String?) -> Unit) {
+        if (vaultMutationJob?.isActive == true) return
+        val vaultId = mimakuId.value
+        val normalized = name.trim()
+        if (vaultId.isEmpty()) {
+            onResult(false, "当前密码库尚未加载")
+            return
+        }
+        if (normalized.isEmpty()) {
+            onResult(false, "请输入密码库名称")
+            return
+        }
+        if (normalized.length > VaultRepository.MAX_NAME_LENGTH) {
+            onResult(false, "名称不能超过 ${VaultRepository.MAX_NAME_LENGTH} 个字符")
+            return
+        }
+        vaultMutationJob = viewModelScope.launch {
+            try {
+                if (mimakuCangku.allOnce().any { it.id != vaultId && it.name.equals(normalized, ignoreCase = true) }) {
+                    onResult(false, "已存在同名密码库")
+                    return@launch
+                }
+                val vault = mimakuCangku.rename(vaultId, normalized)
+                if (vault == null) {
+                    onResult(false, "未找到当前密码库")
+                } else {
+                    _mimakuMingcheng.value = vault.name
+                    onResult(true, null)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onResult(false, "无法重命名密码库")
+            }
+        }
+    }
+
+    fun shanchuDangqianMimaku(onResult: (Boolean, String?) -> Unit) {
+        if (vaultMutationJob?.isActive == true) return
+        val vaultId = mimakuId.value
+        if (vaultId.isEmpty()) {
+            onResult(false, "当前密码库尚未加载")
+            return
+        }
+        vaultMutationJob = viewModelScope.launch {
+            try {
+                when (val result = mimakuCangku.deleteKeepingOne(vaultId)) {
+                    is VaultDeleteResult.Deleted -> {
+                        mimakuId.value = result.fallbackVault.id
+                        _mimakuMingcheng.value = result.fallbackVault.name
+                        biaoqianGuolv.value = null
+                        xuanzhong.value = emptySet()
+                        onResult(true, null)
+                    }
+                    VaultDeleteResult.LastVault -> onResult(false, "至少保留一个密码库")
+                    VaultDeleteResult.NotFound -> onResult(false, "未找到当前密码库")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onResult(false, "无法删除密码库")
             }
         }
     }

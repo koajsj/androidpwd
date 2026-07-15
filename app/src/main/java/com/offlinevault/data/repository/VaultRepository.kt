@@ -21,9 +21,34 @@ class VaultRepository(private val vaultDao: VaultDao) {
     suspend fun allOnce(): List<VaultEntity> = vaultDao.getAllVaultsOnce().map(::decrypt)
 
     suspend fun create(name: String, icon: String): VaultEntity {
-        val vault = VaultEntity(name = EncryptedField.encrypt(name.trim().ifEmpty { "密码库" }), icon = icon)
+        val vault = VaultEntity(name = EncryptedField.encrypt(requireVaultName(name)), icon = icon)
         vaultDao.insert(vault)
         return decrypt(vault)
+    }
+
+    /** Renames a vault without exposing its display name in the database. */
+    suspend fun rename(id: String, name: String): VaultEntity? {
+        val existing = vaultDao.getById(id) ?: return null
+        val updated = existing.copy(
+            name = EncryptedField.encrypt(requireVaultName(name)),
+            updatedAt = System.currentTimeMillis()
+        )
+        vaultDao.update(updated)
+        return decrypt(updated)
+    }
+
+    /**
+     * Deletes one vault and its credentials through Room's foreign-key cascade. At least one
+     * vault is always retained, so callers never end up with an unusable empty destination.
+     */
+    suspend fun deleteKeepingOne(id: String): VaultDeleteResult = ensureDefaultMutex.withLock {
+        val vaults = vaultDao.getAllVaultsOnce()
+        val target = vaults.firstOrNull { it.id == id } ?: return@withLock VaultDeleteResult.NotFound
+        if (vaults.size <= 1) return@withLock VaultDeleteResult.LastVault
+
+        vaultDao.delete(target)
+        val fallback = vaults.first { it.id != id }
+        VaultDeleteResult.Deleted(decrypt(fallback))
     }
 
     suspend fun touch(vaultId: String) {
@@ -60,4 +85,21 @@ class VaultRepository(private val vaultDao: VaultDao) {
             // inside it remain independently encrypted and can still be listed/imported/exported.
             vault.copy(name = "密码库")
         }
+
+    private fun requireVaultName(value: String): String {
+        val name = value.trim()
+        require(name.isNotEmpty()) { "密码库名称不能为空" }
+        require(name.length <= MAX_NAME_LENGTH) { "密码库名称不能超过 $MAX_NAME_LENGTH 个字符" }
+        return name
+    }
+
+    companion object {
+        const val MAX_NAME_LENGTH = 40
+    }
+}
+
+sealed interface VaultDeleteResult {
+    data class Deleted(val fallbackVault: VaultEntity) : VaultDeleteResult
+    data object LastVault : VaultDeleteResult
+    data object NotFound : VaultDeleteResult
 }
