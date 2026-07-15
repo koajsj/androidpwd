@@ -149,13 +149,24 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
-        SessionManager.lock()
+        // Rotation recreates the activity but not the process. Keeping the in-memory key across
+        // that short configuration handoff avoids an unnecessary re-login while FLAG_SECURE stays
+        // applied; actual finishing/destruction still locks immediately.
+        if (!isChangingConfigurations) {
+            SessionManager.lock()
+        }
         runCatching { unregisterReceiver(screenOffReceiver) }
         super.onDestroy()
     }
 
     override fun onStop() {
         super.onStop()
+        // A configuration recreation is not backgrounding. Do not make a portrait/landscape
+        // change behave like leaving the app, especially when auto-lock is set to immediate.
+        if (isChangingConfigurations) {
+            backgroundedAt = 0L
+            return
+        }
         // Record every transition, including system UI. A picker must not bypass the configured
         // timeout simply because it temporarily fronted the activity.
         backgroundedAt = System.currentTimeMillis()

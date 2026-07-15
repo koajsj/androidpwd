@@ -24,23 +24,22 @@ class OfflineVaultApp : Application() {
         container = AppContainer(this)
         applicationScope.launch {
             SessionManager.unlocked.filter { it }.collect {
-                val integrityOk = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     try {
-                        container.passwordRepository.assertVaultIntegrity()
                         container.vaultRepository.migrateLegacyMetadata()
                         container.passwordRepository.migrateLegacyMetadata()
                         // Permanently remove recycle-bin items past their retention window.
                         container.passwordRepository.purgeExpiredTrash()
-                        true
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
-                        false
+                        // Maintenance is best-effort. A single damaged credential is already
+                        // isolated by repository list/detail flows; locking the whole vault here
+                        // would make the remaining recoverable records permanently inaccessible.
                     }
                 }
-                if (!integrityOk) {
-                    SessionManager.lock()
-                    Toast.makeText(this@OfflineVaultApp, "密码库完整性校验失败，已锁定", Toast.LENGTH_SHORT).show()
+                // The activity may have been backgrounded while maintenance was running.
+                if (!SessionManager.isUnlocked) {
                     return@collect
                 }
                 persistPendingAutofillSave()

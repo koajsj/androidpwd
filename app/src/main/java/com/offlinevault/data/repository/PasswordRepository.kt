@@ -315,33 +315,24 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     }
 
     suspend fun migrateLegacyMetadata() {
-        passwordDao.getAllOnce().forEach { row ->
-            if (listOf(row.title, row.username, row.url, row.tags).any { !EncryptedField.isEncrypted(it) }) {
-                passwordDao.update(
-                    row.copy(
-                        title = EncryptedField.encrypt(row.title),
-                        username = EncryptedField.encrypt(row.username),
-                        url = EncryptedField.encrypt(row.url),
-                        tags = EncryptedField.encrypt(row.tags)
-                    )
-                )
+        passwordDao.getAllIncludingTrashedOnce().forEach { row ->
+            // Older releases could leave a mixture of legacy plaintext and encrypted metadata.
+            // Encrypt fields independently: re-encrypting the already protected fields would make
+            // their display value the ciphertext after the next unlock.
+            val migrated = row.copy(
+                title = encryptLegacyMetadata(row.title),
+                username = encryptLegacyMetadata(row.username),
+                url = encryptLegacyMetadata(row.url),
+                tags = encryptLegacyMetadata(row.tags)
+            )
+            if (migrated != row) {
+                passwordDao.update(migrated)
             }
         }
     }
 
-    suspend fun assertVaultIntegrity() {
-        val key = SessionManager.requireKey()
-        passwordDao.getAllIncludingTrashedOnce().forEach { row ->
-            decryptMetadata(row)
-            decryptRequired(key, row.encryptedPassword, "password", row.id)
-            if (row.encryptedNote.isNotBlank()) {
-                decryptRequired(key, row.encryptedNote, "note", row.id)
-            }
-        }
-        passwordDao.allHistoryOnce().forEach { row ->
-            decryptRequired(key, row.encryptedPassword, "history", row.id)
-        }
-    }
+    private fun encryptLegacyMetadata(value: String): String =
+        if (EncryptedField.isEncrypted(value)) value else EncryptedField.encrypt(value)
 
     /** Resilient variant used by list flows: returns null instead of throwing on a corrupted row. */
     private fun decryptMetadataOrNull(entity: PasswordEntity): PasswordEntity? =

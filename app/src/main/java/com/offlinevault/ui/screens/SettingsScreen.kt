@@ -57,6 +57,7 @@ import com.offlinevault.ui.components.ImportPreviewDialog
 import com.offlinevault.ui.components.PasteImportDialog
 import com.offlinevault.ui.components.PasswordVisualField
 import com.offlinevault.ui.components.SectionCard
+import com.offlinevault.ui.components.SecureWindowEffect
 import com.offlinevault.ui.components.VaultTextField
 import com.offlinevault.utils.FileIo
 import com.offlinevault.utils.FilePickerCompat
@@ -110,6 +111,10 @@ fun SettingsScreen(
     var pendingMnemonicError by remember { mutableStateOf<String?>(null) }
     var pendingMnemonicSaving by remember { mutableStateOf(false) }
     var verifyingMnemonicMaster by remember { mutableStateOf(false) }
+
+    // A regenerated phrase is just as sensitive as the first-run phrase. Force screenshot
+    // protection while it is visible even if the user disabled the general screen setting.
+    SecureWindowEffect(enabled = pendingMnemonicWords != null)
 
     // Pending values across file picker round-trips.
     var pendingJsonBackup by remember { mutableStateOf<String?>(null) }

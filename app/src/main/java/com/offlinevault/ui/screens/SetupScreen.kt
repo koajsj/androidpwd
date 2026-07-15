@@ -47,6 +47,7 @@ import com.offlinevault.ui.components.IconBadge
 import com.offlinevault.ui.components.PasswordVisualField
 import com.offlinevault.ui.components.PrimaryButton
 import com.offlinevault.ui.components.SectionCard
+import com.offlinevault.ui.components.SecureWindowEffect
 import com.offlinevault.ui.components.StrengthMeter
 import com.offlinevault.ui.components.VaultTextField
 
@@ -66,6 +67,10 @@ fun SetupScreen(
     var revealMaster by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
     var pendingMnemonicWords by remember { mutableStateOf<List<String>?>(null) }
+
+    // The initial recovery phrase is displayed only here; it must never be capturable even when
+    // the user later chooses to disable the general screenshot-block setting.
+    SecureWindowEffect(enabled = pendingMnemonicWords != null)
 
     val strength = PasswordStrengthChecker.evaluate(master)
     val canSubmit = credType.isValid(master) && confirm.isNotEmpty() &&
