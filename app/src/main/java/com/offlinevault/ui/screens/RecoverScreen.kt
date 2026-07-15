@@ -110,7 +110,13 @@ fun RecoverScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(Modifier.height(14.dp))
-                    VaultTextField(value = answer, onValueChange = { answer = it }, label = "你的答案")
+                    PasswordVisualField(
+                        value = answer,
+                        onValueChange = { answer = it },
+                        label = "你的答案",
+                        revealed = false,
+                        keyboardType = KeyboardType.Password
+                    )
                 } else {
                     Text("12 个助记词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))

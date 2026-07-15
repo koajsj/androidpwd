@@ -35,6 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +78,10 @@ fun PasswordDetailScreen(
     var reveal by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.clearHistory() }
+    }
 
     fun toast(message: String) = scope.launch { snackbar.showSnackbar(message) }
 

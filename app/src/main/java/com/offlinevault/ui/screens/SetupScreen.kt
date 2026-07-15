@@ -205,7 +205,13 @@ fun SetupScreen(
                 Spacer(Modifier.height(12.dp))
                 VaultTextField(value = question, onValueChange = { question = it }, label = "安全问题")
                 Spacer(Modifier.height(12.dp))
-                VaultTextField(value = answer, onValueChange = { answer = it }, label = "问题答案")
+                PasswordVisualField(
+                    value = answer,
+                    onValueChange = { answer = it },
+                    label = "问题答案",
+                    revealed = false,
+                    keyboardType = KeyboardType.Password
+                )
             }
         }
 

@@ -40,7 +40,7 @@ class OfflineVaultApp : Application() {
                 }
                 if (!integrityOk) {
                     SessionManager.lock()
-                    Toast.makeText(this, "密码库完整性校验失败，已锁定", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@OfflineVaultApp, "密码库完整性校验失败，已锁定", Toast.LENGTH_SHORT).show()
                     return@collect
                 }
                 persistPendingAutofillSave()
@@ -72,7 +72,7 @@ class OfflineVaultApp : Application() {
             }
         }
         if (saved) {
-            Toast.makeText(this, "已将账号保存到密码库", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@OfflineVaultApp, "已将账号保存到密码库", Toast.LENGTH_SHORT).show()
         } else {
             PendingAutofillSave.set(capture)
         }

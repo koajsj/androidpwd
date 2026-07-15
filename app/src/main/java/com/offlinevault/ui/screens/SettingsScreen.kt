@@ -52,6 +52,7 @@ import com.offlinevault.data.backup.ImportPreview
 import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.security.MnemonicManager
 import com.offlinevault.security.PasswordStrengthChecker
+import com.offlinevault.security.SessionManager
 import com.offlinevault.ui.components.ImportPreviewDialog
 import com.offlinevault.ui.components.PasteImportDialog
 import com.offlinevault.ui.components.PasswordVisualField
@@ -132,11 +133,13 @@ fun SettingsScreen(
     ) { uri ->
         com.offlinevault.security.LockGuard.suppressNextBackground = false
         val json = pendingJsonBackup
-        if (uri != null && json != null) {
+        if (uri != null && json != null && SessionManager.isUnlocked) {
             scope.launch {
                 val ok = FileIo.writeText(context, uri, json)
                 toast(if (ok) "加密备份已保存" else "无法写入文件")
             }
+        } else if (uri != null && json != null) {
+            toast("密码库已锁定，请解锁后重新导出")
         }
         pendingJsonBackup = null
     }
@@ -146,7 +149,7 @@ fun SettingsScreen(
     ) { uri ->
         com.offlinevault.security.LockGuard.suppressNextBackground = false
         val vaultId = pendingCsvVaultId
-        if (uri != null && vaultId != null) {
+        if (uri != null && vaultId != null && SessionManager.isUnlocked) {
             viewModel.buildCsv(vaultId, pendingCsvSlim) { result ->
                 val csv = result.content
                 if (csv == null) {
@@ -158,6 +161,8 @@ fun SettingsScreen(
                     toast(if (ok) "CSV 已导出（包含明文密码）" else "无法写入文件")
                 }
             }
+        } else if (uri != null && vaultId != null) {
+            toast("密码库已锁定，请解锁后重新导出")
         }
         pendingCsvVaultId = null
     }
@@ -221,6 +226,12 @@ fun SettingsScreen(
     fun handlePickedUri(uri: Uri?) {
         com.offlinevault.security.LockGuard.suppressNextBackground = false
         if (uri == null) return
+        // A system picker may have exceeded the configured auto-lock timeout. Refuse rather than
+        // retaining the selected backup or operating with a cleared session key.
+        if (!SessionManager.isUnlocked) {
+            toast("密码库已锁定，请解锁后重新导入")
+            return
+        }
         FilePickerCompat.persistReadPermission(context, uri)
         scope.launch {
             val text = FileIo.readText(context, uri)
@@ -1047,7 +1058,13 @@ private fun ChangeRecoveryDialog(
             Column {
                 VaultTextField(value = question, onValueChange = { question = it }, label = "安全问题")
                 Spacer(Modifier.height(10.dp))
-                VaultTextField(value = answer, onValueChange = { answer = it }, label = "新答案")
+                PasswordVisualField(
+                    value = answer,
+                    onValueChange = { answer = it },
+                    label = "新答案",
+                    revealed = false,
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                )
             }
         },
         confirmButton = {

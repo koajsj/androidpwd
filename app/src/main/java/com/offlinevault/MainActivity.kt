@@ -113,6 +113,9 @@ class MainActivity : FragmentActivity() {
         )
 
         // Apply / clear FLAG_SECURE reactively from the screenshot-block setting.
+        // Start fail-closed: DataStore is asynchronous, so a recreated unlocked activity must not
+        // draw sensitive content before the persisted preference is available.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 try {
@@ -153,23 +156,40 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // A system picker or the biometric prompt fronted us — don't lock for that.
-        if (LockGuard.suppressNextBackground) return
+        // Record every transition, including system UI. A picker must not bypass the configured
+        // timeout simply because it temporarily fronted the activity.
         backgroundedAt = System.currentTimeMillis()
-        SessionManager.lock()
+        if (LockGuard.suppressNextBackground) return
+        lifecycleScope.launch {
+            try {
+                if (prefs.autoLockSecondsValue() == 0) SessionManager.lock()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                SessionManager.lock()
+            }
+        }
     }
 
     override fun onStart() {
         super.onStart()
         if (LockGuard.suppressNextBackground) {
+            val deferForBiometricPrompt = LockGuard.suppressAutoLockOnReturn
             LockGuard.suppressNextBackground = false
-            return
+            LockGuard.suppressAutoLockOnReturn = false
+            // BiometricPrompt callbacks clear their guard as soon as they resolve. On OEMs where
+            // the prompt briefly stops the host activity, do not discard its CryptoObject mid-flow.
+            if (deferForBiometricPrompt) return
         }
         if (!SessionManager.isUnlocked || backgroundedAt == 0L) return
         lifecycleScope.launch {
             try {
                 val seconds = prefs.autoLockSecondsValue()
-                if (seconds > 0) {
+                if (seconds == 0) {
+                    // External picker/biometric flows are allowed to finish, but once control
+                    // returns to the vault the immediate-lock setting must take effect.
+                    SessionManager.lock()
+                } else {
                     val elapsed = System.currentTimeMillis() - backgroundedAt
                     if (elapsed >= seconds * 1000L) SessionManager.lock()
                 }
@@ -205,6 +225,7 @@ private fun AppRoot() {
         authVm.prepareBiometricCipher { cipher ->
             if (cipher != null) {
                 LockGuard.suppressNextBackground = true
+                LockGuard.suppressAutoLockOnReturn = true
                 BiometricHelper.authenticate(
                     activity = activity,
                     title = "解锁离线密码库",
@@ -212,9 +233,19 @@ private fun AppRoot() {
                     cipher = cipher,
                     // Clear the suppression as soon as the prompt resolves so a later real
                     // backgrounding is not wrongly skipped (the prompt often causes no onStop).
-                    onSuccess = { LockGuard.suppressNextBackground = false; authVm.finishBiometricUnlock(it) },
-                    onError = { LockGuard.suppressNextBackground = false },
-                    onCancel = { LockGuard.suppressNextBackground = false }
+                    onSuccess = {
+                        LockGuard.suppressNextBackground = false
+                        LockGuard.suppressAutoLockOnReturn = false
+                        authVm.finishBiometricUnlock(it)
+                    },
+                    onError = {
+                        LockGuard.suppressNextBackground = false
+                        LockGuard.suppressAutoLockOnReturn = false
+                    },
+                    onCancel = {
+                        LockGuard.suppressNextBackground = false
+                        LockGuard.suppressAutoLockOnReturn = false
+                    }
                 )
             }
         }
@@ -224,14 +255,27 @@ private fun AppRoot() {
         settingsVm.prepareEnableBiometricCipher { cipher ->
             if (cipher == null) { onDone(false); return@prepareEnableBiometricCipher }
             LockGuard.suppressNextBackground = true
+            LockGuard.suppressAutoLockOnReturn = true
             BiometricHelper.authenticate(
                 activity = activity,
                 title = "启用指纹解锁",
                 subtitle = "验证后启用指纹解锁",
                 cipher = cipher,
-                onSuccess = { LockGuard.suppressNextBackground = false; settingsVm.finishEnableBiometric(it, onDone) },
-                onError = { LockGuard.suppressNextBackground = false; onDone(false) },
-                onCancel = { LockGuard.suppressNextBackground = false; onDone(false) }
+                onSuccess = {
+                    LockGuard.suppressNextBackground = false
+                    LockGuard.suppressAutoLockOnReturn = false
+                    settingsVm.finishEnableBiometric(it, onDone)
+                },
+                onError = {
+                    LockGuard.suppressNextBackground = false
+                    LockGuard.suppressAutoLockOnReturn = false
+                    onDone(false)
+                },
+                onCancel = {
+                    LockGuard.suppressNextBackground = false
+                    LockGuard.suppressAutoLockOnReturn = false
+                    onDone(false)
+                }
             )
         }
     }

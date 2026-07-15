@@ -86,6 +86,7 @@ import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.security.LockGuard
 import com.offlinevault.security.PasswordStrengthChecker
+import com.offlinevault.security.SessionManager
 import com.offlinevault.ui.components.CardShape
 import com.offlinevault.ui.components.ImportPreviewDialog
 import com.offlinevault.ui.components.PasteImportDialog
@@ -196,6 +197,12 @@ fun PasswordListScreen(
     fun handlePickedUri(uri: Uri?) {
         LockGuard.suppressNextBackground = false
         if (uri == null) return
+        // The activity may have auto-locked while the system picker was in front. Do not retain a
+        // selected backup or attempt an import after the in-memory data-encryption key is cleared.
+        if (!SessionManager.isUnlocked) {
+            toast("密码库已锁定，请解锁后重新导入")
+            return
+        }
         FilePickerCompat.persistReadPermission(context, uri)
         scope.launch {
             val text = FileIo.readText(context, uri)

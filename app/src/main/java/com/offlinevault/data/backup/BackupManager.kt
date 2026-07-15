@@ -261,13 +261,13 @@ class BackupManager(
         val effectiveVaultId = existingVault?.id ?: targetVaultId.ifBlank { NEW_IMPORT_VAULT_PLACEHOLDER }
         val targetLabel = existingVault?.name ?: "已导入（将新建）"
 
-        val header = rows.first().map { it.trim().lowercase() }
-        val nameIdx = header.indexOfFirst { it == "name" || it == "title" }
-        val urlIdx = header.indexOfFirst { it == "url" }
-        val userIdx = header.indexOfFirst { it == "username" || it == "login" || it == "email" }
-        val passIdx = header.indexOfFirst { it == "password" }
-        val noteIdx = header.indexOfFirst { it == "note" || it == "notes" }
-        val tagsIdx = header.indexOfFirst { it == "tags" }
+        val header = rows.first().map { normalizeHeader(it) }
+        val nameIdx = header.indexOfAny("name", "title", "网站名称", "名称", "标题")
+        val urlIdx = header.indexOfAny("url", "origin_url", "action_url", "login_url", "website", "site", "网址", "网站")
+        val userIdx = header.indexOfAny("username", "user", "login", "email", "login_username", "账号", "用户名", "邮箱")
+        val passIdx = header.indexOfAny("password", "pass", "login_password", "密码")
+        val noteIdx = header.indexOfAny("note", "notes", "备注")
+        val tagsIdx = header.indexOfAny("tags", "tag", "标签")
 
         if (passIdx < 0) throw IllegalArgumentException("CSV 中缺少 “password” 列")
 
@@ -450,13 +450,31 @@ class BackupManager(
         vaultId: String,
         items: List<DecryptedPassword>,
         errors: MutableList<String>
-    ): Int = try {
-        if (items.isEmpty()) 0 else passwordRepository.importDecrypted(vaultId, items)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (_: Exception) {
-        errors += "部分项目导入失败"
-        0
+    ): Int {
+        if (items.isEmpty()) return 0
+        try {
+            return passwordRepository.importDecrypted(vaultId, items)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Room's bulk insert is transactional: one malformed external row makes the whole
+            // batch roll back. Retry one by one so a bad import record cannot discard every other
+            // valid credential in the selected file.
+        }
+
+        var inserted = 0
+        items.forEach { item ->
+            try {
+                passwordRepository.importDecrypted(vaultId, listOf(item))
+                inserted++
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Counted by the caller; never expose imported credential content in an error.
+            }
+        }
+        if (inserted < items.size) errors += "部分项目导入失败"
+        return inserted
     }
 
     private suspend fun existingIndexByVault(
@@ -630,6 +648,14 @@ class BackupManager(
 
     private fun comparableHost(url: String): String? =
         OriginMatcher.hostFromUrl(url)?.removePrefix("www.")
+
+    private fun normalizeHeader(value: String): String =
+        value.trim().trim('\uFEFF').lowercase().replace(" ", "_").replace("-", "_")
+
+    private fun List<String>.indexOfAny(vararg candidates: String): Int {
+        val wanted = candidates.map(::normalizeHeader).toSet()
+        return indexOfFirst { it in wanted }
+    }
 
     private fun String.normalizedUser(): String = trim().lowercase()
 
