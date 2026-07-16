@@ -9,6 +9,9 @@ import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.KdfVersions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.Locale
 
 /**
  * Handles JSON (encrypted) and CSV import/export. Everything runs locally; nothing is uploaded.
@@ -22,6 +25,10 @@ class BackupManager(
         const val MAX_IMPORT_ITEMS = 50_000
         const val MAX_CSV_ROWS = MAX_IMPORT_ITEMS + 1
         const val PREVIEW_SAMPLE_LIMIT = 5
+        // Keep encryption and Room's transaction footprint bounded on low-memory devices. A
+        // failed batch is retried item by item, so one malformed external record never discards
+        // the rest of a large import.
+        const val IMPORT_WRITE_BATCH_SIZE = 200
         const val NEW_IMPORT_VAULT_PLACEHOLDER = "__new_vault__"
         const val PENDING_IMPORT_ID_PREFIX = "__pending_import__"
     }
@@ -61,6 +68,9 @@ class BackupManager(
     )
 
     private val gson = Gson()
+    // JSON import may be launched from both the list and settings flows. Serialise the full
+    // read/index/write operation so simultaneous taps cannot calculate duplicates from stale data.
+    private val importMutex = Mutex()
 
     // ---- JSON export (encrypted) ------------------------------------------
 
@@ -83,18 +93,23 @@ class BackupManager(
             plainBytes.fill(0)
         }
 
-        val wrapper = EncryptedBackup(
-            salt = CryptoManager.encode(salt),
-            data = CryptoManager.encode(blob),
-            iterations = iterations,
-            kdfVersion = kdf.version,
-            integrityHash = integrityHash
-        )
-        val result = gson.toJson(wrapper)
-        if (!validateEncryptedJsonBackup(result, backupPassword)) {
-            throw IllegalStateException("备份校验失败")
+        return try {
+            val wrapper = EncryptedBackup(
+                salt = CryptoManager.encode(salt),
+                data = CryptoManager.encode(blob),
+                iterations = iterations,
+                kdfVersion = kdf.version,
+                integrityHash = integrityHash
+            )
+            val result = gson.toJson(wrapper)
+            if (!validateEncryptedJsonBackup(result, backupPassword)) {
+                throw IllegalStateException("备份校验失败")
+            }
+            result
+        } finally {
+            salt.fill(0)
+            blob.fill(0)
         }
-        return result
     }
 
     suspend fun validateEncryptedJsonBackup(content: String, backupPassword: String): Boolean =
@@ -114,9 +129,14 @@ class BackupManager(
         content: String,
         backupPassword: String,
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
-    ): ImportResult {
-        val prepared = try {
-            prepareJsonImport(content, backupPassword)
+    ): ImportResult = importMutex.withLock {
+        val backupData: BackupData
+        val prepared: PreparedImport
+        try {
+            // Parse once. Repeating PBKDF2 + AES-GCM merely to retrieve the vault rows makes
+            // encrypted imports needlessly slow on older phones.
+            backupData = parseBackupData(content, backupPassword)
+            prepared = prepareJsonImport(backupData)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IllegalArgumentException) {
@@ -126,7 +146,6 @@ class BackupManager(
         }
 
         val vaultsById = vaultRepository.allOnce().associateBy { it.id }.toMutableMap()
-        val backupData = parseBackupData(content, backupPassword)
         for (vault in backupData.vaults) {
             if (vault.id in vaultsById) continue
             try {
@@ -174,7 +193,7 @@ class BackupManager(
         content: String,
         targetVaultId: String,
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
-    ): ImportResult {
+    ): ImportResult = importMutex.withLock {
         val prepared = try {
             prepareCsvImport(content, targetVaultId)
         } catch (e: CancellationException) {
@@ -201,6 +220,11 @@ class BackupManager(
 
     private suspend fun prepareJsonImport(content: String, backupPassword: String): PreparedImport {
         val data = parseBackupData(content, backupPassword)
+        return prepareJsonImport(data)
+    }
+
+    /** Builds the import plan from an already parsed backup to avoid duplicate KDF work. */
+    private suspend fun prepareJsonImport(data: BackupData): PreparedImport {
         validateBackup(data)?.let { throw IllegalArgumentException(it) }
 
         val existingVaults = vaultRepository.allOnce()
@@ -455,25 +479,25 @@ class BackupManager(
         errors: MutableList<String>
     ): Int {
         if (items.isEmpty()) return 0
-        try {
-            return passwordRepository.importDecrypted(vaultId, items)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // Room's bulk insert is transactional: one malformed external row makes the whole
-            // batch roll back. Retry one by one so a bad import record cannot discard every other
-            // valid credential in the selected file.
-        }
-
         var inserted = 0
-        items.forEach { item ->
+        for (batch in items.chunked(IMPORT_WRITE_BATCH_SIZE)) {
             try {
-                passwordRepository.importDecrypted(vaultId, listOf(item))
-                inserted++
+                inserted += passwordRepository.importDecrypted(vaultId, batch)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Counted by the caller; never expose imported credential content in an error.
+                // Room's batch insert is transactional: retry this small batch one by one so a
+                // malformed external row cannot discard its valid neighbours.
+                batch.forEach { item ->
+                    try {
+                        passwordRepository.importDecrypted(vaultId, listOf(item))
+                        inserted++
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Counted by the caller; never expose imported credential content here.
+                    }
+                }
             }
         }
         if (inserted < items.size) errors += "部分项目导入失败"
@@ -511,25 +535,34 @@ class BackupManager(
         val wrapper = gson.fromJson(content, EncryptedBackup::class.java)
         if (wrapper != null && wrapper.format == "offline-vault-backup" && wrapper.encrypted) {
             val salt = CryptoManager.decode(wrapper.salt)
-            val iterations = CryptoManager.requireValidIterations(
-                if (wrapper.iterations > 0) wrapper.iterations
-                else CryptoManager.LEGACY_PBKDF2_ITERATIONS
-            )
-            val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
-            val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
-            val plainBytes = CryptoManager.decrypt(key, CryptoManager.decode(wrapper.data))
-            if (wrapper.integrityHash.isNotBlank() &&
-                !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
-            ) {
-                throw IllegalArgumentException("备份完整性校验失败")
-            }
-            val plain = try {
-                String(plainBytes, Charsets.UTF_8)
+            try {
+                val encryptedBytes = CryptoManager.decode(wrapper.data)
+                try {
+                    val iterations = CryptoManager.requireValidIterations(
+                        if (wrapper.iterations > 0) wrapper.iterations
+                        else CryptoManager.LEGACY_PBKDF2_ITERATIONS
+                    )
+                    val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
+                    val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
+                    val plainBytes = CryptoManager.decrypt(key, encryptedBytes)
+                    if (wrapper.integrityHash.isNotBlank() &&
+                        !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
+                    ) {
+                        throw IllegalArgumentException("备份完整性校验失败")
+                    }
+                    val plain = try {
+                        String(plainBytes, Charsets.UTF_8)
+                    } finally {
+                        plainBytes.fill(0)
+                    }
+                    return gson.fromJson(plain, BackupData::class.java)
+                        ?: throw IllegalArgumentException("备份为空或格式无效")
+                } finally {
+                    encryptedBytes.fill(0)
+                }
             } finally {
-                plainBytes.fill(0)
+                salt.fill(0)
             }
-            return gson.fromJson(plain, BackupData::class.java)
-                ?: throw IllegalArgumentException("备份为空或格式无效")
         }
         return gson.fromJson(content, BackupData::class.java)
             ?: throw IllegalArgumentException("备份为空或格式无效")
@@ -654,17 +687,17 @@ class BackupManager(
         OriginMatcher.hostFromUrl(url)?.removePrefix("www.")
 
     private fun normalizeHeader(value: String): String =
-        value.trim().trim('\uFEFF').lowercase().replace(" ", "_").replace("-", "_")
+        value.trim().trim('\uFEFF').lowercase(Locale.ROOT).replace(" ", "_").replace("-", "_")
 
     private fun List<String>.indexOfAny(vararg candidates: String): Int {
         val wanted = candidates.map(::normalizeHeader).toSet()
         return indexOfFirst { it in wanted }
     }
 
-    private fun String.normalizedUser(): String = trim().lowercase()
+    private fun String.normalizedUser(): String = trim().lowercase(Locale.ROOT)
 
     private fun String.normalizedTitle(): String =
-        lowercase()
+        lowercase(Locale.ROOT)
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
             .replace(Regex("\\s+"), " ")

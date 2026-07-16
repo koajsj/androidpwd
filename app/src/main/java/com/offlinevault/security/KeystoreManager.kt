@@ -22,6 +22,8 @@ object KeystoreManager {
 
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val KEY_ALIAS = "offline_vault_biometric_key"
+    // Retained only to consume short-lived pending Autofill captures and migrate v1 preferences.
+    // Long-lived master/recovery/mnemonic envelopes must never depend on this device key.
     private const val MATERIAL_KEY_ALIAS = "offline_vault_material_key"
     private const val GCM_TAG_BITS = 128
     private const val IV_LENGTH = 12
@@ -74,9 +76,8 @@ object KeystoreManager {
     fun deleteBiometricKey(): Boolean = deleteAlias(KEY_ALIAS)
 
     /**
-     * Deletes the key that protects wrapped DataStore material. This is only safe after the
-     * corresponding encrypted preferences have been deliberately erased as part of a full reset;
-     * deleting it independently makes existing wrapped DEKs unrecoverable.
+     * Deletes the retired v1 material key during an explicit full reset. It is also used for a
+     * short-lived pending Autofill capture, so do not delete it automatically while the app runs.
      */
     fun deleteMaterialKeyForFullReset(): Boolean = deleteAlias(MATERIAL_KEY_ALIAS)
 
@@ -122,14 +123,26 @@ object KeystoreManager {
     fun wrapWithDeviceKey(plaintext: ByteArray): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateMaterialKey())
-        return joinIv(cipher.iv, cipher.doFinal(plaintext))
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(plaintext)
+        return try {
+            joinIv(iv, ciphertext)
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     fun unwrapWithDeviceKey(blob: ByteArray): ByteArray {
         val (iv, ciphertext) = splitIv(blob)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateMaterialKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
-        return cipher.doFinal(ciphertext)
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateMaterialKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.doFinal(ciphertext)
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     private fun deleteAlias(alias: String): Boolean = runCatching {

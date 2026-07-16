@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Offline Vault</string>
+    <string name="autofill_service_summary">A fully offline on-device password autofill service. It never accesses the network.</string>
+</resources>

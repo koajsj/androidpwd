@@ -60,6 +60,7 @@ fun PasswordEditScreen(
     LaunchedEffect(vaultId, passwordId) { viewModel.initialize(vaultId, passwordId) }
     val form by viewModel.form.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+    val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
 
     var reveal by remember { mutableStateOf(false) }
     var showGenerator by remember { mutableStateOf(false) }
@@ -153,7 +154,7 @@ fun PasswordEditScreen(
 
             Spacer(Modifier.height(24.dp))
             PrimaryButton(
-                text = "保存",
+                text = if (isSaving) "正在保存…" else "保存",
                 onClick = {
                     viewModel.save { ok, message ->
                         if (ok) {
@@ -163,7 +164,8 @@ fun PasswordEditScreen(
                         }
                     }
                 },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isSaving
             )
             Spacer(Modifier.height(24.dp))
         }

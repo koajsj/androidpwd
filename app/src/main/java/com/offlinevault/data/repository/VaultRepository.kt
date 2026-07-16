@@ -3,7 +3,9 @@ package com.offlinevault.data.repository
 import com.offlinevault.data.dao.VaultDao
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.security.EncryptedField
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -14,7 +16,12 @@ class VaultRepository(private val vaultDao: VaultDao) {
     // autofill save unlocks) can't both pass the "no vault yet" check and create duplicate defaults.
     private val ensureDefaultMutex = Mutex()
 
-    fun allVaults(): Flow<List<VaultEntity>> = vaultDao.getAllVaults().map { rows -> rows.map(::decrypt) }
+    // Vault names are encrypted metadata. Decrypt the complete switcher list away from Compose's
+    // main thread so a large multi-vault import does not hitch navigation or settings rendering.
+    fun allVaults(): Flow<List<VaultEntity>> =
+        vaultDao.getAllVaults()
+            .map { rows -> rows.map(::decrypt) }
+            .flowOn(Dispatchers.Default)
 
     suspend fun getById(id: String): VaultEntity? = vaultDao.getById(id)?.let(::decrypt)
 

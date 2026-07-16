@@ -64,6 +64,8 @@ class AuthViewModel(
 
     private val _setupError = MutableStateFlow<String?>(null)
     val setupError: StateFlow<String?> = _setupError.asStateFlow()
+    private val _setupInProgress = MutableStateFlow(false)
+    val setupInProgress: StateFlow<Boolean> = _setupInProgress.asStateFlow()
     private var setupJob: Job? = null
     private var unlockJob: Job? = null
 
@@ -77,6 +79,7 @@ class AuthViewModel(
         if (setupJob?.isActive == true) return
         setupJob = viewModelScope.launch {
             _setupError.value = null
+            _setupInProgress.value = true
             try {
                 prefs.setCredentialType(credentialType.key)
                 withContext(Dispatchers.Default) {
@@ -86,7 +89,10 @@ class AuthViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _setupError.value = "创建密码库失败：${e.message}"
+                // Do not expose internal storage / crypto exception details on a sensitive screen.
+                _setupError.value = "创建密码库失败，请检查输入后重试"
+            } finally {
+                _setupInProgress.value = false
             }
         }
     }
@@ -135,7 +141,7 @@ class AuthViewModel(
     fun prepareBiometricCipher(onReady: (Cipher?) -> Unit) {
         viewModelScope.launch {
             val cipher = try {
-                keyManager.biometricDecryptCipher()
+                withContext(Dispatchers.Default) { keyManager.biometricDecryptCipher() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -143,7 +149,7 @@ class AuthViewModel(
             }
             if (cipher == null && biometricEnabled.value) {
                 try {
-                    keyManager.disableBiometric()
+                    withContext(Dispatchers.Default) { keyManager.disableBiometric() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -160,7 +166,9 @@ class AuthViewModel(
     fun finishBiometricUnlock(cipher: Cipher) {
         viewModelScope.launch {
             try {
-                when (val result = keyManager.unlockWithBiometricCipher(cipher)) {
+                when (val result = withContext(Dispatchers.Default) {
+                    keyManager.unlockWithBiometricCipher(cipher)
+                }) {
                     is UnlockResult.Success -> _unlockState.value = UnlockUiState()
                     is UnlockResult.Error ->
                         _unlockState.value = _unlockState.value.copy(errorMessage = result.message)

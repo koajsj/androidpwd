@@ -54,6 +54,7 @@ import com.offlinevault.ui.components.VaultTextField
 @Composable
 fun SetupScreen(
     setupError: String?,
+    setupInProgress: Boolean,
     biometricAvailable: Boolean,
     onCreate: (master: String, question: String, answer: String, mnemonicPhrase: String, enableBiometric: Boolean, type: CredentialType) -> Unit
 ) {
@@ -108,8 +109,11 @@ fun SetupScreen(
             Spacer(Modifier.height(24.dp))
             MnemonicConfirmationContent(
                 words = words,
-                actionLabel = "完成初始化",
-                onBack = { pendingMnemonicWords = null },
+                scrollable = false,
+                actionLabel = if (setupInProgress) "正在创建…" else "完成初始化",
+                enabled = !setupInProgress,
+                errorMessage = setupError,
+                onBack = { if (!setupInProgress) pendingMnemonicWords = null },
                 onConfirm = {
                     onCreate(
                         master,

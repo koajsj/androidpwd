@@ -101,9 +101,11 @@ import com.offlinevault.ui.components.RiskChip
 import com.offlinevault.utils.FileIo
 import com.offlinevault.utils.FilePickerCompat
 import com.offlinevault.utils.ImportFormatDetector
+import com.offlinevault.utils.toUserMessage
 import com.offlinevault.viewmodel.PasswordListViewModel
 import com.offlinevault.viewmodel.SortOrder
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -160,9 +162,7 @@ fun PasswordListScreen(
     }
 
     fun toast(msg: String) = scope.launch { snackbar.showSnackbar(msg) }
-    fun importToast(r: ImportResult) =
-        toast(r.errors.firstOrNull()
-            ?: "已导入 ${r.imported} 项，覆盖 ${r.updated} 项，跳过 ${r.skippedDuplicates} 项，失败 ${r.failed} 项")
+    fun importToast(r: ImportResult) = toast(r.toUserMessage())
 
     androidx.compose.runtime.LaunchedEffect(errorMessage) {
         errorMessage?.let {
@@ -174,6 +174,10 @@ fun PasswordListScreen(
     fun handleImportText(text: String, sourceName: String = "") {
         if (text.isBlank()) {
             toast("导入内容为空")
+            return
+        }
+        if (!FileIo.isTextWithinImportLimit(text)) {
+            toast("导入内容超过 10 MB 限制")
             return
         }
         if (ImportFormatDetector.looksLikeCsv(sourceName, text)) {
@@ -757,7 +761,7 @@ private fun PasswordCard(
                 Icon(Icons.Filled.Check, contentDescription = "已选中", tint = Color.White)
             } else {
                 Text(
-                    item.title.take(1).uppercase().ifEmpty { "?" },
+                    item.title.take(1).uppercase(Locale.ROOT).ifEmpty { "?" },
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium

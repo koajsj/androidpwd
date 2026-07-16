@@ -1,8 +1,10 @@
 package com.offlinevault.utils
 
+import java.util.Locale
+
 object ImportFormatDetector {
     fun looksLikeCsv(sourceName: String, content: String): Boolean {
-        val lowerName = sourceName.lowercase()
+        val lowerName = sourceName.lowercase(Locale.ROOT)
         if (lowerName.endsWith(".csv")) return true
 
         val trimmed = content.trimStart('\uFEFF', ' ', '\n', '\r', '\t')

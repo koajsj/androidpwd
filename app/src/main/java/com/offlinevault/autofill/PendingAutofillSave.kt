@@ -33,7 +33,13 @@ object PendingAutofillSave {
      */
     @Synchronized
     fun set(capture: Capture): Boolean {
-        val plain = encode(capture)
+        val plain = try {
+            encode(capture)
+        } catch (_: Exception) {
+            // AssistStructure comes from another app. A malformed or oversized field must only
+            // drop this optional deferred save, never crash the Autofill service process.
+            return false
+        }
         val encrypted = try {
             KeystoreManager.wrapWithDeviceKey(plain)
         } catch (_: Exception) {

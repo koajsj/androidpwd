@@ -13,6 +13,20 @@ import java.nio.charset.CodingErrorAction
 object FileIo {
     const val MAX_IMPORT_BYTES = 10 * 1024 * 1024
 
+    /** Uses a no-allocation UTF-8 upper bound so pasted imports obey the same cap as files. */
+    fun isTextWithinImportLimit(text: String): Boolean {
+        var byteCount = 0
+        for (char in text) {
+            byteCount += when {
+                char.code <= 0x7f -> 1
+                char.code <= 0x7ff -> 2
+                else -> 3 // surrogate pairs are conservatively counted as two three-byte units
+            }
+            if (byteCount > MAX_IMPORT_BYTES) return false
+        }
+        return true
+    }
+
     suspend fun readText(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
         try {
             val input = context.contentResolver.openInputStream(uri) ?: return@withContext null
@@ -27,25 +41,35 @@ object FileIo {
     suspend fun writeText(context: Context, uri: Uri, content: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                val stream = runCatching {
-                    context.contentResolver.openOutputStream(uri, "wt")
-                }.getOrElse { error ->
-                    if (error is CancellationException) throw error
-                    null
-                } ?: context.contentResolver.openOutputStream(uri)
-                if (stream == null) {
-                    false
-                } else {
-                    stream.use {
-                        val bytes = content.toByteArray(Charsets.UTF_8)
-                        try {
+                val bytes = content.toByteArray(Charsets.UTF_8)
+                try {
+                    val preferredStream = try {
+                        context.contentResolver.openOutputStream(uri, "wt")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (preferredStream != null) {
+                        preferredStream.use {
                             it.write(bytes)
-                        } finally {
-                            bytes.fill(0)
+                            it.flush()
                         }
+                        return@withContext true
+                    }
+
+                    // Some OEM document providers reject the mode argument even though they
+                    // support a plain output stream. Keep this fallback in its own `use` block
+                    // so both paths deterministically close the provider resource.
+                    val fallbackStream = context.contentResolver.openOutputStream(uri)
+                        ?: return@withContext false
+                    fallbackStream.use {
+                        it.write(bytes)
                         it.flush()
                     }
                     true
+                } finally {
+                    bytes.fill(0)
                 }
             } catch (e: CancellationException) {
                 throw e

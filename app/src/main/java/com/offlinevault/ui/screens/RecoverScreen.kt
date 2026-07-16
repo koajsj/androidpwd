@@ -40,6 +40,7 @@ import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.SecureWindowEffect
 import com.offlinevault.ui.components.StrengthMeter
 import com.offlinevault.ui.components.VaultTextField
+import java.util.Locale
 
 @Composable
 fun RecoverScreen(
@@ -128,7 +129,7 @@ fun RecoverScreen(
                     Spacer(Modifier.height(12.dp))
                     VaultTextField(
                         value = mnemonic,
-                        onValueChange = { mnemonic = it.lowercase() },
+                        onValueChange = { mnemonic = it.lowercase(Locale.ROOT) },
                         label = "助记词",
                         singleLine = false
                     )

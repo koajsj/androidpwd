@@ -2,6 +2,7 @@ package com.offlinevault.autofill
 
 import java.net.IDN
 import java.net.URI
+import java.util.Locale
 
 /** Strict origin matching used by autofill. It intentionally never uses substring matching. */
 object OriginMatcher {
@@ -17,12 +18,12 @@ object OriginMatcher {
     }
 
     /** Canonical identifier stored in a credential's url field for a native app. */
-    fun appIdentifier(packageName: String): String = APP_SCHEME + packageName.trim().lowercase()
+    fun appIdentifier(packageName: String): String = APP_SCHEME + packageName.trim().lowercase(Locale.ROOT)
 
     /** Matches a stored credential against a native app's package name. Exact, never substring. */
     fun matchesApp(storedUrl: String, requestedPackage: String?): Boolean {
-        val pkg = requestedPackage?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
-        val stored = storedUrl.trim().lowercase()
+        val pkg = requestedPackage?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return false
+        val stored = storedUrl.trim().lowercase(Locale.ROOT)
         return stored == APP_SCHEME + pkg
     }
 
@@ -37,7 +38,7 @@ object OriginMatcher {
     }
 
     fun targetLabel(webDomain: String?, packageName: String?): String = when {
-        !webDomain.isNullOrBlank() -> normalizeHost(webDomain) ?: webDomain
+        !webDomain.isNullOrBlank() -> normalizeHost(webDomain) ?: "当前网站"
         !packageName.isNullOrBlank() -> packageName.trim()
         else -> "当前目标"
     }
@@ -51,7 +52,7 @@ object OriginMatcher {
     }
 
     internal fun normalizeHost(value: String?): String? {
-        val host = value?.trim()?.trimEnd('.')?.lowercase().orEmpty()
+        val host = value?.trim()?.trimEnd('.')?.lowercase(Locale.ROOT).orEmpty()
         if (host.isEmpty()) return null
         return runCatching { IDN.toASCII(host) }
             .getOrNull()
@@ -61,11 +62,11 @@ object OriginMatcher {
     private fun comparableHost(host: String): String = host.removePrefix("www.")
 
     private fun isAppIdentifier(value: String): Boolean =
-        value.trim().lowercase().startsWith(APP_SCHEME)
+        value.trim().lowercase(Locale.ROOT).startsWith(APP_SCHEME)
 
     private fun appPackage(value: String): String? =
         value.trim()
-            .lowercase()
+            .lowercase(Locale.ROOT)
             .takeIf { it.startsWith(APP_SCHEME) }
             ?.removePrefix(APP_SCHEME)
             ?.takeIf { it.isNotEmpty() }

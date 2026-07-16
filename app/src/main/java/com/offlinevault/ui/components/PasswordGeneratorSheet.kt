@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import com.offlinevault.security.GeneratorOptions
 import com.offlinevault.security.PasswordGenerator
 import com.offlinevault.security.PasswordStrengthChecker
@@ -57,6 +58,12 @@ fun PasswordGeneratorSheet(
     }
 
     val strength = PasswordStrengthChecker.evaluate(generated)
+    val enabledClassCount = listOf(
+        options.useUpper,
+        options.useLower,
+        options.useDigits,
+        options.useSymbols
+    ).count { it }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -99,14 +106,30 @@ fun PasswordGeneratorSheet(
             Text("长度：${options.length}", style = MaterialTheme.typography.labelLarge)
             Slider(
                 value = options.length.toFloat(),
-                onValueChange = { regenerate(options.copy(length = it.toInt())) },
-                valueRange = PasswordGenerator.MIN_LENGTH.toFloat()..PasswordGenerator.MAX_LENGTH.toFloat()
+                onValueChange = { regenerate(options.copy(length = it.roundToInt())) },
+                valueRange = PasswordGenerator.MIN_LENGTH.toFloat()..PasswordGenerator.MAX_LENGTH.toFloat(),
+                steps = PasswordGenerator.MAX_LENGTH - PasswordGenerator.MIN_LENGTH - 1
             )
 
-            ToggleRow("大写字母（A-Z）", options.useUpper) { regenerate(options.copy(useUpper = it)) }
-            ToggleRow("小写字母（a-z）", options.useLower) { regenerate(options.copy(useLower = it)) }
-            ToggleRow("数字（0-9）", options.useDigits) { regenerate(options.copy(useDigits = it)) }
-            ToggleRow("符号（!@#）", options.useSymbols) { regenerate(options.copy(useSymbols = it)) }
+            ToggleRow("大写字母（A-Z）", options.useUpper, enabled = !options.useUpper || enabledClassCount > 1) {
+                regenerate(options.copy(useUpper = it))
+            }
+            ToggleRow("小写字母（a-z）", options.useLower, enabled = !options.useLower || enabledClassCount > 1) {
+                regenerate(options.copy(useLower = it))
+            }
+            ToggleRow("数字（0-9）", options.useDigits, enabled = !options.useDigits || enabledClassCount > 1) {
+                regenerate(options.copy(useDigits = it))
+            }
+            ToggleRow("符号（!@#）", options.useSymbols, enabled = !options.useSymbols || enabledClassCount > 1) {
+                regenerate(options.copy(useSymbols = it))
+            }
+            if (enabledClassCount == 1) {
+                Text(
+                    "至少保留一种字符类型",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             Spacer(Modifier.height(16.dp))
             PrimaryButton(
@@ -119,13 +142,13 @@ fun PasswordGeneratorSheet(
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().height(48.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }

@@ -34,6 +34,9 @@ class PasswordEditViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _isSaving = MutableStateFlow(false)
+    val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+
     private var loadedKey: String? = null
     private var loadJob: Job? = null
     private var saveJob: Job? = null
@@ -91,6 +94,7 @@ class PasswordEditViewModel(
             return
         }
         saveJob = viewModelScope.launch {
+            _isSaving.value = true
             try {
                 val tags = f.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                 passwordRepository.save(
@@ -109,6 +113,8 @@ class PasswordEditViewModel(
                 throw e
             } catch (_: Exception) {
                 onResult(false, "保存失败，请重新解锁后重试")
+            } finally {
+                _isSaving.value = false
             }
         }
     }

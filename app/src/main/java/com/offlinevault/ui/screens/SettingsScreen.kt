@@ -63,8 +63,10 @@ import com.offlinevault.utils.FileIo
 import com.offlinevault.utils.FilePickerCompat
 import com.offlinevault.utils.Formatters
 import com.offlinevault.utils.ImportFormatDetector
+import com.offlinevault.utils.toUserMessage
 import com.offlinevault.viewmodel.SettingsViewModel
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,9 +95,7 @@ fun SettingsScreen(
     val mnemonicManager = remember { MnemonicManager() }
 
     fun toast(msg: String) = scope.launch { snackbar.showSnackbar(msg) }
-    fun importToast(r: ImportResult) =
-        toast(r.errors.firstOrNull()
-            ?: "已导入 ${r.imported} 项，覆盖 ${r.updated} 项，跳过 ${r.skippedDuplicates} 项，失败 ${r.failed} 项")
+    fun importToast(r: ImportResult) = toast(r.toUserMessage())
 
     // ---- Dialog state ----
     var showAutoLock by remember { mutableStateOf(false) }
@@ -107,7 +107,6 @@ fun SettingsScreen(
     var showCsvWarning by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var pendingMnemonicWords by remember { mutableStateOf<List<String>?>(null) }
-    var pendingMnemonicMasterPassword by remember { mutableStateOf<String?>(null) }
     var pendingMnemonicError by remember { mutableStateOf<String?>(null) }
     var pendingMnemonicSaving by remember { mutableStateOf(false) }
     var verifyingMnemonicMaster by remember { mutableStateOf(false) }
@@ -187,6 +186,10 @@ fun SettingsScreen(
     fun handleImportText(text: String, sourceName: String = "") {
         if (text.isBlank()) {
             toast("导入内容为空")
+            return
+        }
+        if (!FileIo.isTextWithinImportLimit(text)) {
+            toast("导入内容超过 10 MB 限制")
             return
         }
         if (ImportFormatDetector.looksLikeCsv(sourceName, text)) {
@@ -459,7 +462,7 @@ fun SettingsScreen(
                         when {
                             !autofillSupported -> "当前设备不支持系统自动填充"
                             autofillServiceEnabled -> "已将本应用设为系统自动填充服务"
-                            else -> "尚未启用：需在系统设置中将「Offline Vault」设为自动填充服务后才能使用"
+                            else -> "尚未启用：需在系统设置中将「${context.getString(com.offlinevault.R.string.app_name)}」设为自动填充服务后才能使用"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (autofillServiceEnabled || !autofillSupported)
@@ -473,7 +476,7 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "开启步骤：点击上方按钮 → 选择 Offline Vault → 返回本应用。若按钮打不开，请手动进入「系统设置 → 系统 → 语言和输入法 → 自动填充服务」选择 Offline Vault。",
+                            "开启步骤：点击上方按钮 → 选择 ${context.getString(com.offlinevault.R.string.app_name)} → 返回本应用。若按钮打不开，请手动进入「系统设置 → 系统 → 语言和输入法 → 自动填充服务」选择 ${context.getString(com.offlinevault.R.string.app_name)}。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -628,10 +631,9 @@ fun SettingsScreen(
             onConfirm = { masterPassword ->
                 if (!verifyingMnemonicMaster) {
                     verifyingMnemonicMaster = true
-                    viewModel.verifyMasterCredential(masterPassword) { ok, msg ->
+                    viewModel.authorizeMnemonicRecoveryUpdate(masterPassword) { ok, msg ->
                         verifyingMnemonicMaster = false
                         if (ok) {
-                            pendingMnemonicMasterPassword = masterPassword
                             pendingMnemonicWords = mnemonicManager.generateWords()
                             pendingMnemonicError = null
                             pendingMnemonicSaving = false
@@ -645,12 +647,11 @@ fun SettingsScreen(
         )
     }
 
-    if (pendingMnemonicWords != null && pendingMnemonicMasterPassword != null) {
+    if (pendingMnemonicWords != null) {
         AlertDialog(
             onDismissRequest = {
                 if (!pendingMnemonicSaving) {
                     pendingMnemonicWords = null
-                    pendingMnemonicMasterPassword = null
                     pendingMnemonicError = null
                 }
             },
@@ -668,21 +669,18 @@ fun SettingsScreen(
                     onBack = {
                         if (!pendingMnemonicSaving) {
                             pendingMnemonicWords = null
-                            pendingMnemonicMasterPassword = null
                             pendingMnemonicError = null
                         }
                     },
                     onConfirm = {
-                        val masterPassword = pendingMnemonicMasterPassword
                         val phrase = pendingMnemonicWords?.joinToString(" ")
-                        if (masterPassword != null && phrase != null) {
+                        if (phrase != null) {
                             val replacingExistingMnemonic = mnemonicEnabled
                             pendingMnemonicSaving = true
-                            viewModel.updateMnemonicRecovery(masterPassword, phrase) { ok, msg ->
+                            viewModel.updateMnemonicRecoveryForUnlockedSession(phrase) { ok, msg ->
                                 pendingMnemonicSaving = false
                                 if (ok) {
                                     pendingMnemonicWords = null
-                                    pendingMnemonicMasterPassword = null
                                     pendingMnemonicError = null
                                     toast(
                                         if (replacingExistingMnemonic) "助记词已重新生成，旧助记词已失效"
@@ -904,7 +902,7 @@ private fun autoLockLabel(seconds: Int): String = when {
 @Composable
 private fun SectionHeader(text: String) {
     Text(
-        text.uppercase(),
+        text.uppercase(Locale.ROOT),
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.primary,
         fontWeight = FontWeight.SemiBold,

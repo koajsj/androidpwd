@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -42,6 +43,13 @@ class VaultAutofillService : AutofillService() {
     // overwriting each other's AutofillId extras through FLAG_UPDATE_CURRENT.
     private val nextAuthenticationRequestCode = AtomicInteger()
 
+    private companion object {
+        // AssistStructure belongs to the app requesting autofill. Bound traversal prevents a
+        // malformed or hostile hierarchy from exhausting the service stack or main memory.
+        const val MAX_STRUCTURE_NODES = 2_000
+        const val MAX_STRUCTURE_DEPTH = 64
+    }
+
     private data class ParsedFields(
         val usernameId: AutofillId?,
         val passwordId: AutofillId?,
@@ -53,11 +61,8 @@ class VaultAutofillService : AutofillService() {
     ) {
         /** Stable identifier for this target: the web origin if present, else the native app. */
         val identifier: String?
-            get() = when {
-                !webDomain.isNullOrBlank() -> webDomain
-                !packageName.isNullOrBlank() -> OriginMatcher.appIdentifier(packageName)
-                else -> null
-            }
+            get() = webDomain?.let(OriginMatcher::normalizeHost)
+                ?: packageName?.takeIf { it.isNotBlank() }?.let(OriginMatcher::appIdentifier)
 
         fun fillableIds(): List<AutofillId> = listOfNotNull(usernameId, passwordId)
     }
@@ -152,14 +157,17 @@ class VaultAutofillService : AutofillService() {
         var webDomain: String? = null
         val packageName = structure.activityComponent?.packageName
         var order = 0
+        var visitedNodes = 0
 
-        fun traverse(node: AssistStructure.ViewNode) {
+        fun traverse(node: AssistStructure.ViewNode, depth: Int) {
+            if (visitedNodes >= MAX_STRUCTURE_NODES || depth > MAX_STRUCTURE_DEPTH) return
+            visitedNodes++
             if (node.webDomain?.isNotEmpty() == true && webDomain == null) {
                 webDomain = node.webDomain
             }
             val autofillId = node.autofillId
             if (autofillId != null && node.autofillType == View.AUTOFILL_TYPE_TEXT) {
-                val hints = node.autofillHints?.map { it.lowercase() } ?: emptyList()
+                val hints = node.autofillHints?.map { it.lowercase(Locale.ROOT) } ?: emptyList()
                 val inputType = node.inputType
                 val value = textValueOf(node)
                 val fieldOrder = order++
@@ -175,12 +183,13 @@ class VaultAutofillService : AutofillService() {
                 }
             }
             for (i in 0 until node.childCount) {
-                traverse(node.getChildAt(i))
+                traverse(node.getChildAt(i), depth + 1)
             }
         }
 
         for (i in 0 until structure.windowNodeCount) {
-            traverse(structure.getWindowNodeAt(i).rootViewNode)
+            if (visitedNodes >= MAX_STRUCTURE_NODES) break
+            traverse(structure.getWindowNodeAt(i).rootViewNode, depth = 0)
         }
 
         val primaryPassword = passwordCandidates.firstOrNull()
@@ -282,12 +291,13 @@ class VaultAutofillService : AutofillService() {
 
     private fun buildManualSearchPresentation(parsed: ParsedFields): Pair<android.content.IntentSender, RemoteViews>? {
         if (parsed.fillableIds().isEmpty()) return null
-        val targetLabel = OriginMatcher.targetLabel(parsed.webDomain, parsed.packageName)
+        val normalizedDomain = parsed.webDomain?.let(OriginMatcher::normalizeHost)
+        val targetLabel = OriginMatcher.targetLabel(normalizedDomain, parsed.packageName)
         val intent = AutofillSearchActivity.buildIntent(
             this,
             parsed.usernameId,
             parsed.passwordId,
-            parsed.webDomain,
+            normalizedDomain,
             parsed.packageName
         )
         val pendingIntent = PendingIntent.getActivity(
@@ -329,7 +339,7 @@ class VaultAutofillService : AutofillService() {
     ): Int {
         var score = 0
         if (hints.any { it.contains("username") || it.contains("login") || it.contains("account") }) score += 5
-        if (hints.any { it.contains("email") || it == View.AUTOFILL_HINT_EMAIL_ADDRESS.lowercase() }) score += 5
+        if (hints.any { it.contains("email") || it == View.AUTOFILL_HINT_EMAIL_ADDRESS.lowercase(Locale.ROOT) }) score += 5
         if (hints.any { it.contains("phone") || it.contains("tel") }) score += 4
         if (isEmailOrPhoneInput(inputType)) score += 3
         if (looksLikeUsername(node)) score += 3
@@ -370,6 +380,6 @@ class VaultAutofillService : AutofillService() {
         val htmlAttributes = node.htmlInfo?.attributes.orEmpty().flatMap { attr ->
             listOfNotNull(attr.first, attr.second)
         }
-        return (direct + htmlAttributes).map { it.lowercase() }
+        return (direct + htmlAttributes).map { it.lowercase(Locale.ROOT) }
     }
 }

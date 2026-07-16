@@ -25,10 +25,12 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import java.util.Locale
 
 /** List ordering options. Favorites always pin above these. */
 enum class SortOrder { UPDATED, TITLE, STRENGTH }
@@ -102,13 +104,19 @@ class PasswordListViewModel(
             ListQuery(kuId, cxWen, biaoqian, sort)
         }
             .flatMapLatest { q ->
-                val source = when {
-                    q.kuId.isEmpty() -> kotlinx.coroutines.flow.flowOf(emptyList())
-                    q.tag != null -> mimaCangku.byTag(q.kuId, q.tag)
-                    q.query.isNotBlank() -> mimaCangku.search(q.kuId, q.query.trim())
-                    else -> mimaCangku.passwordsByVault(q.kuId)
+                if (q.kuId.isEmpty()) {
+                    kotlinx.coroutines.flow.flowOf(emptyList())
+                } else {
+                    // A tag and a typed query are independent filters. The old branch order made
+                    // the search box appear unresponsive whenever a tag chip was selected.
+                    mimaCangku.passwordsByVault(q.kuId).map { rows ->
+                        rows.asSequence()
+                            .filter { item -> q.tag == null || item.hasTag(q.tag) }
+                            .filter { item -> q.query.isBlank() || item.matchesQuery(q.query) }
+                            .toList()
+                            .let { sortItems(it, q.sort) }
+                    }
                 }
-                source.map { sortItems(it, q.sort) }
             }
             // Row decryption + sorting happen off the main thread so large vaults never jank the UI.
             .flowOn(Dispatchers.Default)
@@ -123,10 +131,19 @@ class PasswordListViewModel(
     private fun sortItems(list: List<PasswordEntity>, order: SortOrder): List<PasswordEntity> {
         val base = when (order) {
             SortOrder.UPDATED -> compareByDescending<PasswordEntity> { it.updatedAt }
-            SortOrder.TITLE -> compareBy<PasswordEntity> { it.title.lowercase() }
+            SortOrder.TITLE -> compareBy<PasswordEntity> { it.title.lowercase(Locale.ROOT) }
             SortOrder.STRENGTH -> compareBy<PasswordEntity> { it.strengthScore }
         }
         return list.sortedWith(compareByDescending<PasswordEntity> { it.favorite }.then(base))
+    }
+
+    private fun PasswordEntity.hasTag(tag: String): Boolean =
+        tags.split(',').map(String::trim).any { it.equals(tag, ignoreCase = true) }
+
+    private fun PasswordEntity.matchesQuery(query: String): Boolean {
+        val normalizedQuery = query.trim()
+        return listOf(title, username, url, tags)
+            .any { it.contains(normalizedQuery, ignoreCase = true) }
     }
 
     // ---- Selection (batch operations) ----
@@ -177,9 +194,18 @@ class PasswordListViewModel(
             liebiao.flatMap { it.tags.split(",") }
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
-                .distinct()
-                .sorted()
+                .distinctBy { it.lowercase(Locale.ROOT) }
+                .sortedBy { it.lowercase(Locale.ROOT) }
         }.flowOn(Dispatchers.Default)
+            .onEach { availableTags ->
+                // If the last item carrying the selected tag was deleted or edited, remove the
+                // now-invisible filter instead of leaving the user on an empty list with no chip
+                // available to clear it.
+                val selected = biaoqianGuolv.value
+                if (selected != null && availableTags.none { it.equals(selected, ignoreCase = true) }) {
+                    biaoqianGuolv.value = null
+                }
+            }
             .catch { yichang ->
                 if (yichang is CancellationException) throw yichang
                 emit(emptyList())
@@ -188,6 +214,9 @@ class PasswordListViewModel(
 
     /** Opens the single default vault, creating it on first run. Used as the app's home. */
     fun jiazaiMoren() {
+        // A configuration change recreates the composition and re-runs the launch effect. Keep
+        // the vault the user already selected instead of silently jumping back to the first one.
+        if (mimakuId.value.isNotBlank()) return
         viewModelScope.launch {
             try {
                 val mimaku = mimakuCangku.ensureDefault()
@@ -391,9 +420,14 @@ class PasswordListViewModel(
         _cuowuXinxi.value = null
     }
 
-    fun shezhiChaxun(zhi: String) { chaxun.value = zhi }
+    fun shezhiChaxun(zhi: String) {
+        if (chaxun.value != zhi) xuanzhong.value = emptySet()
+        chaxun.value = zhi
+    }
 
     fun qiehuanBiaoqian(biaoqian: String) {
-        biaoqianGuolv.value = if (biaoqianGuolv.value == biaoqian) null else biaoqian
+        val current = biaoqianGuolv.value
+        biaoqianGuolv.value = if (current?.equals(biaoqian, ignoreCase = true) == true) null else biaoqian
+        xuanzhong.value = emptySet()
     }
 }

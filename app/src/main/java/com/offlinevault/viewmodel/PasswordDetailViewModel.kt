@@ -68,6 +68,10 @@ class PasswordDetailViewModel(
     private var historyJob: Job? = null
 
     fun load(passwordId: String) {
+        if (id.value != passwordId) {
+            historyJob?.cancel()
+            _history.value = emptyList()
+        }
         _error.value = null
         id.value = passwordId
     }

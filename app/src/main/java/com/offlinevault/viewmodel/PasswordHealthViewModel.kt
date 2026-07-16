@@ -2,6 +2,7 @@ package com.offlinevault.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.offlinevault.data.repository.PasswordHealthCandidate
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.security.PasswordStrengthChecker
 import kotlinx.coroutines.CancellationException
@@ -61,7 +62,7 @@ class PasswordHealthViewModel(
     }
 
     private suspend fun buildReport(): HealthReport {
-        val all = passwordRepository.allDecryptedSkippingCorrupt()
+        val all = passwordRepository.healthCandidatesSkippingCorrupt()
         val withPassword = all.filter { it.password.isNotBlank() }
 
         val weak = withPassword
@@ -83,6 +84,6 @@ class PasswordHealthViewModel(
         return HealthReport(total = all.size, weak = weak, reused = reused, stale = stale)
     }
 
-    private fun com.offlinevault.data.repository.DecryptedPassword.toEntry() =
+    private fun PasswordHealthCandidate.toEntry() =
         HealthEntry(id = id, title = title.ifBlank { "无标题" }, username = username)
 }

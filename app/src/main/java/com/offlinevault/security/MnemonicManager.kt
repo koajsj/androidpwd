@@ -25,7 +25,7 @@ class MnemonicManager {
     fun normalize(input: String): String =
         input
             .trim()
-            .lowercase(Locale.US)
+            .lowercase(Locale.ROOT)
             .split(Regex("\\s+"))
             .filter { it.isNotBlank() }
             .joinToString(" ")
@@ -42,7 +42,14 @@ class MnemonicManager {
         normalizedPhrase: String,
         salt: ByteArray,
         kdf: KdfSpec = KdfVersions.current()
-    ): SecretKey = CryptoManager.deriveKey(normalizedPhrase.toCharArray(), salt, kdf)
+    ): SecretKey {
+        val phraseChars = normalizedPhrase.toCharArray()
+        return try {
+            CryptoManager.deriveKey(phraseChars, salt, kdf)
+        } finally {
+            phraseChars.fill('\u0000')
+        }
+    }
 
     fun verifierHash(normalizedPhrase: String, salt: ByteArray, kdf: KdfSpec = KdfVersions.current()): String {
         val keyBytes = deriveRecoveryKey(normalizedPhrase, salt, kdf).encoded

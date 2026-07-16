@@ -9,7 +9,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -73,6 +72,12 @@ class MainActivity : FragmentActivity() {
     @Volatile
     private var lockOnScreenOff = false
 
+    // Keep the timeout available synchronously on the lifecycle callback. Activity Result
+    // callbacks can run before a coroutine launched from onStart, so checking DataStore there
+    // left a short window in which an expired export/import action could still run.
+    @Volatile
+    private var autoLockSeconds = 0
+
     // Locks the vault the instant the device screen turns off, when the user enabled that option.
     private val screenOffReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
@@ -99,6 +104,11 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 prefs.lockOnScreenOffFlow.collect { lockOnScreenOff = it }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                prefs.autoLockSecondsFlow.collect { autoLockSeconds = it }
             }
         }
 
@@ -172,15 +182,7 @@ class MainActivity : FragmentActivity() {
         // timeout simply because it temporarily fronted the activity.
         backgroundedAt = System.currentTimeMillis()
         if (LockGuard.suppressNextBackground) return
-        lifecycleScope.launch {
-            try {
-                if (prefs.autoLockSecondsValue() == 0) SessionManager.lock()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                SessionManager.lock()
-            }
-        }
+        if (autoLockSeconds == 0) SessionManager.lock()
     }
 
     override fun onStart() {
@@ -193,23 +195,18 @@ class MainActivity : FragmentActivity() {
             // the prompt briefly stops the host activity, do not discard its CryptoObject mid-flow.
             if (deferForBiometricPrompt) return
         }
+        // A document picker or system-settings page is not an authentication prompt. It must not
+        // grant an extra unlocked interval: honour the configured immediate/timeout auto-lock as
+        // soon as the user returns, before handling its Activity Result.
         if (!SessionManager.isUnlocked || backgroundedAt == 0L) return
-        lifecycleScope.launch {
-            try {
-                val seconds = prefs.autoLockSecondsValue()
-                if (seconds == 0) {
-                    // External picker/biometric flows are allowed to finish, but once control
-                    // returns to the vault the immediate-lock setting must take effect.
-                    SessionManager.lock()
-                } else {
-                    val elapsed = System.currentTimeMillis() - backgroundedAt
-                    if (elapsed >= seconds * 1000L) SessionManager.lock()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                SessionManager.lock()
-            }
+        val seconds = autoLockSeconds
+        if (seconds == 0) {
+            // External picker/biometric flows are allowed to finish, but once control returns to
+            // the vault the immediate-lock setting must take effect before its result callback.
+            SessionManager.lock()
+        } else {
+            val elapsed = System.currentTimeMillis() - backgroundedAt
+            if (elapsed >= seconds * 1000L) SessionManager.lock()
         }
     }
 }
@@ -226,6 +223,7 @@ private fun AppRoot() {
     val recoveryQuestion by authVm.recoveryQuestion.collectAsStateWithLifecycle()
     val mnemonicEnabled by authVm.mnemonicEnabled.collectAsStateWithLifecycle()
     val credentialType by authVm.credentialType.collectAsStateWithLifecycle()
+    val setupInProgress by authVm.setupInProgress.collectAsStateWithLifecycle()
     val clipboardSeconds by settingsVm.clipboardClearSeconds.collectAsStateWithLifecycle()
 
     // A copied password should not outlive an unlocked session, even if the user selected a
@@ -308,14 +306,17 @@ private fun AppRoot() {
         }
     }
 
-    Crossfade(targetState = lockState, label = "lockState") { state ->
-        when (state) {
+    // Never animate away from decrypted content when the session locks. A crossfade keeps the
+    // previous composition alive for a few frames, which is pleasant for ordinary navigation but
+    // the wrong trade-off at an authentication boundary.
+    when (lockState) {
             AppLockState.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
             }
 
             AppLockState.SETUP -> SetupScreen(
                 setupError = authVm.setupError.collectAsStateWithLifecycle().value,
+                setupInProgress = setupInProgress,
                 biometricAvailable = biometricAvailable,
                 onCreate = { master, question, answer, mnemonicPhrase, enableBio, credType ->
                     pendingEnableBiometric = enableBio
@@ -359,7 +360,6 @@ private fun AppRoot() {
                 settingsViewModel = settingsVm,
                 onEnableBiometric = { onDone -> enableBiometric(onDone) }
             )
-        }
     }
 }
 

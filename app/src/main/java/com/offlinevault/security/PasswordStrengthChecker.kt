@@ -1,5 +1,7 @@
 package com.offlinevault.security
 
+import java.util.Locale
+
 /** Risk buckets used to colour the UI. */
 enum class StrengthLevel { HIGH_RISK, MEDIUM_RISK, LOW_RISK }
 
@@ -47,7 +49,7 @@ object PasswordStrengthChecker {
         val distinct = password.toSet().size
 
         // Immediate fail for a known weak password.
-        if (password.lowercase() in COMMON_WEAK) {
+        if (password.lowercase(Locale.ROOT) in COMMON_WEAK) {
             warnings.add("这是非常常见的弱密码")
             return StrengthResult(5, StrengthLevel.HIGH_RISK, warnings)
         }

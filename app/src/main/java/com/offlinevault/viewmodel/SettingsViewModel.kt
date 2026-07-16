@@ -146,12 +146,12 @@ class SettingsViewModel(
         }
     }
 
-    fun verifyMasterCredential(masterPassword: String, onResult: (Boolean, String?) -> Unit) {
+    fun authorizeMnemonicRecoveryUpdate(masterPassword: String, onResult: (Boolean, String?) -> Unit) {
         if (verifyMasterJob?.isActive == true) return
         verifyMasterJob = viewModelScope.launch {
             try {
                 when (val result = withContext(Dispatchers.Default) {
-                    keyManager.verifyMasterCredential(masterPassword)
+                    keyManager.authorizeMnemonicRecoveryUpdate(masterPassword)
                 }) {
                     is UnlockResult.Success -> onResult(true, null)
                     is UnlockResult.WrongCredential -> onResult(false, "当前密码不正确")
@@ -166,12 +166,13 @@ class SettingsViewModel(
         }
     }
 
-    fun updateMnemonicRecovery(masterPassword: String, mnemonicPhrase: String, onResult: (Boolean, String?) -> Unit) {
+    /** The UI verifies the current master password immediately before calling this method. */
+    fun updateMnemonicRecoveryForUnlockedSession(mnemonicPhrase: String, onResult: (Boolean, String?) -> Unit) {
         if (changeMnemonicJob?.isActive == true) return
         changeMnemonicJob = viewModelScope.launch {
             try {
                 when (val result = withContext(Dispatchers.Default) {
-                    keyManager.updateMnemonicRecovery(masterPassword, mnemonicPhrase)
+                    keyManager.updateMnemonicRecoveryForUnlockedSession(mnemonicPhrase)
                 }) {
                     is UnlockResult.Success -> onResult(true, null)
                     is UnlockResult.WrongCredential -> onResult(false, "当前密码不正确")
@@ -210,26 +211,30 @@ class SettingsViewModel(
 
     /** Builds an ENCRYPT cipher to enable biometric unlock. Null if Keystore key creation failed. */
     fun prepareEnableBiometricCipher(onReady: (Cipher?) -> Unit) {
-        // Do not delete a working key before the user actually completes the system prompt.
-        // Otherwise cancelling a re-enable attempt would silently break an already usable
-        // biometric unlock. Enrollment changes already invalidate the key at the Keystore level;
-        // only rebuild when the existing material can no longer initialise a Cipher.
-        val cipher = try {
-            KeystoreManager.encryptCipher()
-        } catch (_: KeyPermanentlyInvalidatedException) {
-            runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
-        } catch (_: InvalidKeyException) {
-            runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
-        } catch (_: Exception) {
-            null
+        viewModelScope.launch {
+            // Do not delete a working key before the user actually completes the system prompt.
+            // Otherwise cancelling a re-enable attempt would silently break an already usable
+            // biometric unlock. Enrollment changes already invalidate the key at the Keystore
+            // level; only rebuild when the existing material can no longer initialise a Cipher.
+            val cipher = withContext(Dispatchers.Default) {
+                try {
+                    KeystoreManager.encryptCipher()
+                } catch (_: KeyPermanentlyInvalidatedException) {
+                    runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
+                } catch (_: InvalidKeyException) {
+                    runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            onReady(cipher)
         }
-        onReady(cipher)
     }
 
     fun finishEnableBiometric(cipher: Cipher, onDone: (Boolean) -> Unit) {
         viewModelScope.launch {
             val success = try {
-                keyManager.storeBiometricWrappedDek(cipher)
+                withContext(Dispatchers.Default) { keyManager.storeBiometricWrappedDek(cipher) }
                 true
             } catch (e: CancellationException) {
                 throw e
@@ -242,7 +247,7 @@ class SettingsViewModel(
 
     fun disableBiometric(onResult: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
-            onResult(runAction { keyManager.disableBiometric() })
+            onResult(withContext(Dispatchers.Default) { runAction { keyManager.disableBiometric() } })
         }
     }
 

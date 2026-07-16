@@ -46,7 +46,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.offlinevault.OfflineVaultApp
 import com.offlinevault.R
 import com.offlinevault.data.repository.DecryptedPassword
@@ -64,6 +66,14 @@ private data class AutofillCandidate(
 )
 
 class AutofillSearchActivity : FragmentActivity() {
+
+    private var backgroundedAt: Long = 0L
+
+    // This activity can return an Autofill Dataset containing plaintext credentials. Keep the
+    // timeout in memory so returning from background cannot race a coroutine/DataStore read and
+    // allow a dataset to be selected after the configured lock deadline.
+    @Volatile
+    private var autoLockSeconds = 0
 
     companion object {
         private const val EXTRA_USERNAME_ID = "autofill_username_id"
@@ -102,34 +112,81 @@ class AutofillSearchActivity : FragmentActivity() {
         }
 
         val app = application as OfflineVaultApp
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                app.container.securityPreferences.autoLockSecondsFlow.collect {
+                    autoLockSeconds = it
+                }
+            }
+        }
         val loadingState = mutableStateOf(true)
         val errorState = mutableStateOf<String?>(null)
         val itemsState = mutableStateOf<List<AutofillCandidate>>(emptyList())
+        val allCandidatesLoaded = mutableStateOf(false)
 
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    val all = app.container.passwordRepository.allDecryptedSkippingCorrupt()
-                    all.map { candidate ->
-                        AutofillCandidate(
-                            item = candidate,
-                            matchesTarget = (!webDomain.isNullOrBlank() && OriginMatcher.matches(candidate.url, webDomain)) ||
-                                (!packageName.isNullOrBlank() && OriginMatcher.matchesApp(candidate.url, packageName))
-                        )
-                    }.sortedByDescending { it.matchesTarget }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            }
+        fun cancelForLockedSession() {
+            // This screen can contain fully decrypted credentials. Drop the Compose state before
+            // finishing so a lock/background transition never leaves a stale frame or an in-memory
+            // candidate list behind while the activity is being torn down.
             loadingState.value = false
-            if (result == null) {
-                errorState.value = "无法读取密码库"
-            } else {
-                itemsState.value = result
+            errorState.value = null
+            allCandidatesLoaded.value = false
+            itemsState.value = emptyList()
+            setResult(RESULT_CANCELED)
+            finish()
+        }
+
+        // MainActivity's lifecycle is not active while this authentication activity is on top.
+        // Observe the session here as well so an explicit lock, screen-off lock or memory-pressure
+        // lock immediately closes the manual picker and clears its decrypted candidates.
+        lifecycleScope.launch {
+            SessionManager.unlocked.collect { unlocked ->
+                if (!unlocked) cancelForLockedSession()
             }
         }
+
+        fun matchesCurrentTarget(url: String): Boolean =
+            (!webDomain.isNullOrBlank() && OriginMatcher.matches(url, webDomain)) ||
+                (!packageName.isNullOrBlank() && OriginMatcher.matchesApp(url, packageName))
+
+        fun loadCandidates(includeAll: Boolean) {
+            if (includeAll && allCandidatesLoaded.value) return
+            loadingState.value = true
+            errorState.value = null
+            lifecycleScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    try {
+                        if (includeAll) {
+                            app.container.passwordRepository.allDecryptedSkippingCorrupt().map { candidate ->
+                                AutofillCandidate(candidate, matchesCurrentTarget(candidate.url))
+                            }.sortedByDescending { it.matchesTarget }
+                        } else {
+                            // Do not decrypt unrelated credentials merely to present the default
+                            // autofill list. The broader list is loaded only after explicit user
+                            // confirmation in the sensitive activity.
+                            app.container.passwordRepository.decryptedMatching(::matchesCurrentTarget)
+                                .map { AutofillCandidate(it, matchesTarget = true) }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                if (!SessionManager.isUnlocked || isFinishing || isDestroyed) {
+                    cancelForLockedSession()
+                    return@launch
+                }
+                loadingState.value = false
+                if (result == null) {
+                    errorState.value = "无法读取密码库"
+                } else {
+                    itemsState.value = result
+                    if (includeAll) allCandidatesLoaded.value = true
+                }
+            }
+        }
+        loadCandidates(includeAll = false)
 
         setContent {
             OfflineVaultTheme {
@@ -138,6 +195,8 @@ class AutofillSearchActivity : FragmentActivity() {
                     loading = loadingState.value,
                     error = errorState.value,
                     candidates = itemsState.value,
+                    allCandidatesLoaded = allCandidatesLoaded.value,
+                    onRequestAllCandidates = { loadCandidates(includeAll = true) },
                     onBack = { finish() },
                     onPick = { item ->
                         if (!SessionManager.isUnlocked) {
@@ -158,6 +217,25 @@ class AutofillSearchActivity : FragmentActivity() {
                     }
                 )
             }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (isChangingConfigurations) {
+            backgroundedAt = 0L
+            return
+        }
+        backgroundedAt = System.currentTimeMillis()
+        if (autoLockSeconds == 0) SessionManager.lock()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!SessionManager.isUnlocked || backgroundedAt == 0L) return
+        val seconds = autoLockSeconds
+        if (seconds == 0 || System.currentTimeMillis() - backgroundedAt >= seconds * 1000L) {
+            SessionManager.lock()
         }
     }
 
@@ -200,6 +278,8 @@ private fun AutofillSearchScreen(
     loading: Boolean,
     error: String?,
     candidates: List<AutofillCandidate>,
+    allCandidatesLoaded: Boolean,
+    onRequestAllCandidates: () -> Unit,
     onBack: () -> Unit,
     onPick: (DecryptedPassword) -> Unit
 ) {
@@ -207,7 +287,7 @@ private fun AutofillSearchScreen(
     var showAll by remember { mutableStateOf(false) }
     var showAllConfirmation by remember { mutableStateOf(false) }
     var pendingNonMatching by remember { mutableStateOf<AutofillCandidate?>(null) }
-    val visibleCandidates = if (showAll) candidates else candidates.filter { it.matchesTarget }
+    val visibleCandidates = if (showAll && allCandidatesLoaded) candidates else candidates.filter { it.matchesTarget }
     val filtered = remember(query, visibleCandidates) {
         val keyword = query.trim()
         if (keyword.isBlank()) visibleCandidates
@@ -331,6 +411,7 @@ private fun AutofillSearchScreen(
                 TextButton(onClick = {
                     showAllConfirmation = false
                     showAll = true
+                    onRequestAllCandidates()
                 }) { Text("继续查看") }
             },
             dismissButton = { TextButton(onClick = { showAllConfirmation = false }) { Text("取消") } }

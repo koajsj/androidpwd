@@ -8,6 +8,7 @@ import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultDataCorruptionException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ensureActive
@@ -35,6 +36,15 @@ data class PasswordHistoryItem(
     val id: String,
     val password: String,
     val changedAt: Long
+)
+
+/** Minimum decrypted shape required by the on-demand password-health report. */
+data class PasswordHealthCandidate(
+    val id: String,
+    val title: String,
+    val username: String,
+    val password: String,
+    val updatedAt: Long
 )
 
 class PasswordRepository(private val passwordDao: PasswordDao) {
@@ -184,7 +194,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     suspend fun history(passwordId: String): List<PasswordHistoryItem> {
         val key = SessionManager.requireKey()
         return passwordDao.historyForOnce(passwordId).mapNotNull { row ->
-            val pw = runCatching { CryptoManager.decryptString(key, row.encryptedPassword) }.getOrNull()
+            val pw = skipCorrupt { CryptoManager.decryptString(key, row.encryptedPassword) }
                 ?: return@mapNotNull null
             PasswordHistoryItem(row.id, pw, row.changedAt)
         }
@@ -195,7 +205,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
      * Reuses the existing ciphertext (same session key) so no re-encryption is needed.
      */
     private suspend fun recordHistoryIfChanged(existing: PasswordEntity, newPassword: String, key: javax.crypto.SecretKey) {
-        val old = runCatching { CryptoManager.decryptString(key, existing.encryptedPassword) }.getOrNull()
+        val old = skipCorrupt { CryptoManager.decryptString(key, existing.encryptedPassword) }
         if (old.isNullOrEmpty() || old == newPassword) return
         passwordDao.insertHistory(
             com.offlinevault.data.model.PasswordHistoryEntity(
@@ -215,11 +225,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         val key = SessionManager.requireKey()
         val now = System.currentTimeMillis()
         val existing = passwordDao.getAllOnce().firstOrNull { entity ->
-            runCatching {
+            skipCorrupt {
                 val url = EncryptedField.decrypt(entity.url)
                 val user = EncryptedField.decrypt(entity.username)
                 OriginMatcher.sameTarget(url, identifier) && user.equals(username.trim(), ignoreCase = true)
-            }.getOrDefault(false)
+            } ?: false
         }
         if (existing != null) {
             recordHistoryIfChanged(existing, password, key)
@@ -259,8 +269,30 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     suspend fun allDecryptedSkippingCorrupt(): List<DecryptedPassword> =
         passwordDao.getAllOnce().mapNotNull {
             coroutineContext.ensureActive()
-            runCatching { decrypt(it) }.getOrNull()
+            skipCorrupt { decrypt(it) }
         }
+
+    /**
+     * Health checks never need notes, tags or URLs. Avoid decrypting and retaining those fields
+     * when auditing a large vault; the returned password strings are reduced to report entries by
+     * the caller before they reach UI state.
+     */
+    suspend fun healthCandidatesSkippingCorrupt(): List<PasswordHealthCandidate> {
+        val key = SessionManager.requireKey()
+        return passwordDao.getAllOnce().mapNotNull { entity ->
+            coroutineContext.ensureActive()
+            skipCorrupt {
+                val metadata = decryptMetadata(entity)
+                PasswordHealthCandidate(
+                    id = entity.id,
+                    title = metadata.title,
+                    username = metadata.username,
+                    password = decryptRequired(key, entity.encryptedPassword, "password", entity.id),
+                    updatedAt = entity.updatedAt
+                )
+            }
+        }
+    }
 
     suspend fun decryptedForVault(vaultId: String): List<DecryptedPassword> =
         passwordDao.getPasswordsByVaultIdOnce(vaultId).map {
@@ -271,7 +303,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     suspend fun decryptedForVaultSkippingCorrupt(vaultId: String): List<DecryptedPassword> =
         passwordDao.getPasswordsByVaultIdOnce(vaultId).mapNotNull {
             coroutineContext.ensureActive()
-            runCatching { decrypt(it) }.getOrNull()
+            skipCorrupt { decrypt(it) }
         }
 
     /**
@@ -282,9 +314,9 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     suspend fun decryptedMatching(urlMatches: (String) -> Boolean): List<DecryptedPassword> {
         SessionManager.requireKey() // fail fast when locked
         return passwordDao.getAllOnce().mapNotNull { entity ->
-            val url = runCatching { EncryptedField.decrypt(entity.url) }.getOrNull() ?: return@mapNotNull null
+            val url = skipCorrupt { EncryptedField.decrypt(entity.url) } ?: return@mapNotNull null
             if (!urlMatches(url)) return@mapNotNull null
-            runCatching { decrypt(entity) }.getOrNull()
+            skipCorrupt { decrypt(entity) }
         }
     }
 
@@ -336,7 +368,20 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Resilient variant used by list flows: returns null instead of throwing on a corrupted row. */
     private fun decryptMetadataOrNull(entity: PasswordEntity): PasswordEntity? =
-        runCatching { decryptMetadata(entity) }.getOrNull()
+        skipCorrupt { decryptMetadata(entity) }
+
+    /**
+     * Isolate corrupt rows without swallowing coroutine cancellation. `runCatching` catches
+     * CancellationException too, which can make a dismissed import/list scan keep doing crypto
+     * work in the background on a large vault.
+     */
+    private inline fun <T> skipCorrupt(block: () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
 
     private fun decryptMetadata(entity: PasswordEntity): PasswordEntity = try {
         entity.copy(

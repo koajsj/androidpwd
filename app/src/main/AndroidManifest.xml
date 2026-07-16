@@ -45,6 +45,11 @@
             android:exported="false"
             android:theme="@style/Theme.OfflineVault.Starting" />
 
+        <!-- App-private fallback for clearing an app-owned sensitive clipboard clip. -->
+        <receiver
+            android:name=".utils.ClipboardClearReceiver"
+            android:exported="false" />
+
         <!-- Offline Autofill service -->
         <service
             android:name=".autofill.VaultAutofillService"

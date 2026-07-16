@@ -1,6 +1,5 @@
 package com.offlinevault.ui.screens
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -123,7 +122,8 @@ fun PasswordDetailScreen(
             }
             return@Scaffold
         }
-        val strength = PasswordStrengthChecker.evaluate(current.password)
+        val hasPassword = current.password.isNotEmpty()
+        val strength = if (hasPassword) PasswordStrengthChecker.evaluate(current.password) else null
 
         Column(
             Modifier
@@ -159,15 +159,19 @@ fun PasswordDetailScreen(
                         Column(Modifier.weight(1f)) {
                             Text("密码", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(2.dp))
-                            Crossfade(targetState = reveal, label = "reveal") { shown ->
-                                Text(
-                                    if (shown) current.password else "••••••••••••",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                            // Do not animate a secret out of the composition: a crossfade keeps
+                            // the plaintext branch alive briefly after the user hides it.
+                            Text(
+                                when {
+                                    !hasPassword -> "未设置密码"
+                                    reveal -> current.password
+                                    else -> "••••••••••••"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
-                        IconButton(onClick = { reveal = !reveal }) {
+                        IconButton(onClick = { reveal = !reveal }, enabled = hasPassword) {
                             Icon(
                                 if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                                 contentDescription = "切换显示状态",
@@ -180,16 +184,19 @@ fun PasswordDetailScreen(
                                 if (clipboardSeconds > 0) "密码已复制，将在 ${clipboardSeconds} 秒后清除"
                                 else "密码已复制"
                             )
-                        }) {
+                        }, enabled = hasPassword) {
                             Icon(Icons.Filled.ContentCopy, contentDescription = "复制", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
-                    Spacer(Modifier.height(4.dp))
-                    StrengthMeter(score = strength.score, level = strength.level)
-                    if (strength.warnings.isNotEmpty()) {
+                    if (strength != null) {
+                        Spacer(Modifier.height(4.dp))
+                        StrengthMeter(score = strength.score, level = strength.level)
+                    }
+                    val firstStrengthWarning = strength?.warnings?.firstOrNull()
+                    if (firstStrengthWarning != null) {
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            strength.warnings.first(),
+                            firstStrengthWarning,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

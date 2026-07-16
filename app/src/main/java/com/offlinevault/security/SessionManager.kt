@@ -2,6 +2,7 @@ package com.offlinevault.security
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.SecretKey
 
 /**
@@ -12,19 +13,26 @@ object SessionManager {
 
     @Volatile
     private var dek: SecretKey? = null
+    private val sessionGenerationCounter = AtomicLong(0)
 
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked
 
     val isUnlocked: Boolean get() = dek != null
+    /** Changes on every lock and unlock, so short-lived authorizations cannot cross sessions. */
+    val sessionGeneration: Long get() = sessionGenerationCounter.get()
 
+    @Synchronized
     fun unlock(key: SecretKey) {
         dek = key
+        sessionGenerationCounter.incrementAndGet()
         _unlocked.value = true
     }
 
+    @Synchronized
     fun lock() {
         dek = null
+        sessionGenerationCounter.incrementAndGet()
         _unlocked.value = false
     }
 

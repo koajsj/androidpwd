@@ -4,14 +4,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -78,48 +80,53 @@ fun PasswordHealthScreen(
 
             else -> {
                 val report = state.report
-                Column(
+                val neutralRiskColor = MaterialTheme.colorScheme.onSurfaceVariant
+                // A health report can legitimately contain every entry in a large imported
+                // vault. Lazy rendering keeps this screen responsive instead of composing every
+                // weak/reused/stale row before the first frame appears.
+                LazyColumn(
                     Modifier
                         .fillMaxSize()
-                        .padding(padding)
-                        .verticalScroll(rememberScrollState())
-                        .padding(16.dp)
+                        .padding(padding),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    SummaryCard(report)
+                    item { SummaryCard(report) }
 
                     if (report.weak.isEmpty() && report.reused.isEmpty() && report.stale.isEmpty()) {
-                        Spacer(Modifier.height(20.dp))
-                        SectionCard {
-                            Text(
-                                if (report.total == 0) "还没有密码可供体检。"
-                                else "未发现明显问题，你的密码状况良好。",
-                                style = MaterialTheme.typography.bodyLarge
-                            )
+                        item {
+                            SectionCard {
+                                Text(
+                                    if (report.total == 0) "还没有密码可供体检。"
+                                    else "未发现明显问题，你的密码状况良好。",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
                         }
                     }
 
-                    IssueSection(
+                    issueSection(
                         title = "弱密码",
                         description = "强度过低，容易被破解，建议尽快更换。",
                         color = RiskHigh,
                         entries = report.weak,
                         onOpenItem = onOpenItem
                     )
-                    IssueSection(
+                    issueSection(
                         title = "重复使用的密码",
                         description = "多个账号使用了相同的密码，一处泄露会牵连其它账号。",
                         color = RiskMedium,
                         entries = report.reused,
                         onOpenItem = onOpenItem
                     )
-                    IssueSection(
+                    issueSection(
                         title = "长期未更新",
                         description = "超过 180 天未修改，建议定期更换重要账号的密码。",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = neutralRiskColor,
                         entries = report.stale,
                         onOpenItem = onOpenItem
                     )
-                    Spacer(Modifier.height(24.dp))
+                    item { Spacer(Modifier.height(14.dp)) }
                 }
             }
         }
@@ -150,8 +157,7 @@ private fun Stat(label: String, count: Int, color: Color) {
     }
 }
 
-@Composable
-private fun IssueSection(
+private fun LazyListScope.issueSection(
     title: String,
     description: String,
     color: Color,
@@ -159,46 +165,41 @@ private fun IssueSection(
     onOpenItem: (String) -> Unit
 ) {
     if (entries.isEmpty()) return
-    Spacer(Modifier.height(20.dp))
-    Text(
-        "$title · ${entries.size}",
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-        color = color
-    )
-    Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Spacer(Modifier.height(8.dp))
-    SectionCard {
-        Column {
-            entries.forEachIndexed { index, entry ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenItem(entry.id) }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(entry.title, style = MaterialTheme.typography.bodyLarge)
-                        if (entry.username.isNotBlank()) {
-                            Text(
-                                entry.username,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+    item(key = "health-section-$title") {
+        Column(Modifier.padding(top = 10.dp)) {
+            Text(
+                "$title · ${entries.size}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = color
+            )
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    items(entries, key = { entry -> "health-$title-${entry.id}" }) { entry ->
+        SectionCard {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenItem(entry.id) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(entry.title, style = MaterialTheme.typography.bodyLarge)
+                    if (entry.username.isNotBlank()) {
+                        Text(
+                            entry.username,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-                if (index != entries.lastIndex) {
-                    androidx.compose.material3.HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                    )
-                }
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">離線密碼庫</string>
+    <string name="autofill_service_summary">完全離線的本機密碼自動填入服務，不會存取網路。</string>
+</resources>

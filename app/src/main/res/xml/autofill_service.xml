@@ -1,24 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Compatibility mode lets the autofill framework work inside browsers that render web pages as a
-  virtual view hierarchy (no native autofill hints). Each listed browser package is opted in up to
-  the given version code. Native apps do not need this.
+  virtual view hierarchy (no native autofill hints). The maximum version is deliberately omitted:
+  every listed browser version remains eligible. Native apps do not need this.
 -->
 <autofill-service
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:settingsActivity="com.offlinevault.MainActivity">
-    <compatibility-package android:name="com.android.chrome" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.chrome.beta" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.chrome.dev" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="org.mozilla.firefox" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="org.mozilla.focus" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.microsoft.emmx" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.brave.browser" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.opera.browser" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.opera.mini.native" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.sec.android.app.sbrowser" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.duckduckgo.mobile.android" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.vivaldi.browser" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.kiwibrowser.browser" android:maxLongVersionCode="2147483647" />
-    <compatibility-package android:name="com.UCMobile.intl" android:maxLongVersionCode="2147483647" />
+    <compatibility-package android:name="com.android.chrome" />
+    <compatibility-package android:name="com.chrome.beta" />
+    <compatibility-package android:name="com.chrome.dev" />
+    <compatibility-package android:name="org.mozilla.firefox" />
+    <compatibility-package android:name="org.mozilla.focus" />
+    <compatibility-package android:name="com.microsoft.emmx" />
+    <compatibility-package android:name="com.brave.browser" />
+    <compatibility-package android:name="com.opera.browser" />
+    <compatibility-package android:name="com.opera.mini.native" />
+    <compatibility-package android:name="com.sec.android.app.sbrowser" />
+    <compatibility-package android:name="com.duckduckgo.mobile.android" />
+    <compatibility-package android:name="com.vivaldi.browser" />
+    <compatibility-package android:name="com.kiwibrowser.browser" />
+    <compatibility-package android:name="com.UCMobile.intl" />
 </autofill-service>

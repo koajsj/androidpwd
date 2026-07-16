@@ -102,7 +102,12 @@ object CryptoManager {
         val iv = randomBytes(IV_LENGTH)
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         val ciphertext = cipher.doFinal(plaintext)
-        return iv + ciphertext
+        return try {
+            iv + ciphertext
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     /** Decrypts a IV || ciphertext+tag blob produced by [encrypt]. Throws on tampering / wrong key. */
@@ -124,14 +129,24 @@ object CryptoManager {
     fun encryptString(key: SecretKey, plaintext: String): String {
         val bytes = plaintext.toByteArray(Charsets.UTF_8)
         return try {
-            encode(encrypt(key, bytes))
+            val encrypted = encrypt(key, bytes)
+            try {
+                encode(encrypted)
+            } finally {
+                encrypted.fill(0)
+            }
         } finally {
             bytes.fill(0)
         }
     }
 
     fun decryptString(key: SecretKey, encoded: String): String {
-        val bytes = decrypt(key, decode(encoded))
+        val blob = decode(encoded)
+        val bytes = try {
+            decrypt(key, blob)
+        } finally {
+            blob.fill(0)
+        }
         return try {
             String(bytes, Charsets.UTF_8)
         } finally {

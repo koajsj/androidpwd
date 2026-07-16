@@ -119,7 +119,9 @@ fun UnlockScreen(
                 Spacer(Modifier.height(16.dp))
                 PrimaryButton(
                     text = if (state.isLoading) "正在解锁…" else "解锁",
-                    enabled = password.isNotEmpty() && !state.isLoading,
+                    // Avoid a costly PBKDF2 attempt (and a failed-attempt penalty) for a
+                    // partially entered PIN or too-short master password.
+                    enabled = credentialType.isValid(password) && !state.isLoading,
                     onClick = { onUnlock(password) },
                     modifier = Modifier.fillMaxWidth()
                 )

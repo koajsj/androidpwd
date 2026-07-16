@@ -39,12 +39,14 @@ import com.offlinevault.ui.components.PrimaryButton
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.SecureWindowEffect
 import com.offlinevault.ui.components.VaultTextField
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MnemonicConfirmationContent(
     words: List<String>,
     modifier: Modifier = Modifier,
+    scrollable: Boolean = true,
     actionLabel: String,
     enabled: Boolean = true,
     errorMessage: String? = null,
@@ -56,7 +58,8 @@ fun MnemonicConfirmationContent(
     val inputs = remember(words) { mutableStateListOf("", "", "") }
     var error by remember(words) { mutableStateOf<String?>(null) }
 
-    Column(modifier = modifier.verticalScroll(rememberScrollState())) {
+    val contentModifier = if (scrollable) modifier.verticalScroll(rememberScrollState()) else modifier
+    Column(modifier = contentModifier) {
         MnemonicWarningCallout()
         Spacer(Modifier.height(16.dp))
         SectionCard {
@@ -95,7 +98,7 @@ fun MnemonicConfirmationContent(
                 verifyIndexes.forEachIndexed { localIndex, wordIndex ->
                     VaultTextField(
                         value = inputs[localIndex],
-                        onValueChange = { inputs[localIndex] = it.trim().lowercase() },
+                        onValueChange = { inputs[localIndex] = it.trim().lowercase(Locale.ROOT) },
                         label = "第 ${wordIndex + 1} 个单词"
                     )
                     if (localIndex != verifyIndexes.lastIndex) Spacer(Modifier.height(10.dp))
@@ -114,7 +117,7 @@ fun MnemonicConfirmationContent(
             enabled = enabled && inputs.all { it.isNotBlank() },
             onClick = {
                 val ok = verifyIndexes.withIndex().all { (i, wordIndex) ->
-                    inputs[i].trim().lowercase() == words[wordIndex]
+                    inputs[i].trim().lowercase(Locale.ROOT) == words[wordIndex]
                 }
                 if (!ok) {
                     error = "助记词校验失败，请检查离线备份后重试"
