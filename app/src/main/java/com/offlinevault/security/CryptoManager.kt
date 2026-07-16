@@ -75,19 +75,23 @@ object CryptoManager {
         password: CharArray,
         salt: ByteArray,
         iterations: Int = DEFAULT_PBKDF2_ITERATIONS
-    ): SecretKey {
+    ): SecretKey = deriveKey(password, salt, KdfVersions.current(iterations))
+
+    /** Derives a key according to an explicitly persisted [KdfSpec]. */
+    fun deriveKey(password: CharArray, salt: ByteArray, spec: KdfSpec): SecretKey {
         require(salt.size == SALT_LENGTH) { "Invalid salt length" }
-        val spec = PBEKeySpec(password, salt, requireValidIterations(iterations), AES_KEY_BITS)
+        require(spec.version == KdfVersions.PBKDF2_HMAC_SHA256_V1) { "Unsupported KDF version" }
+        val pbeSpec = PBEKeySpec(password, salt, requireValidIterations(spec.iterations), AES_KEY_BITS)
         try {
             val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-            val keyBytes = factory.generateSecret(spec).encoded
+            val keyBytes = factory.generateSecret(pbeSpec).encoded
             try {
                 return SecretKeySpec(keyBytes, "AES")
             } finally {
                 keyBytes.fill(0)
             }
         } finally {
-            spec.clearPassword()
+            pbeSpec.clearPassword()
             password.fill('\u0000')
         }
     }
@@ -107,9 +111,14 @@ object CryptoManager {
         require(blob.size >= IV_LENGTH + GCM_TAG_BITS / 8) { "Ciphertext too short" }
         val iv = blob.copyOfRange(0, IV_LENGTH)
         val ciphertext = blob.copyOfRange(IV_LENGTH, blob.size)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-        return cipher.doFinal(ciphertext)
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.doFinal(ciphertext)
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     fun encryptString(key: SecretKey, plaintext: String): String {

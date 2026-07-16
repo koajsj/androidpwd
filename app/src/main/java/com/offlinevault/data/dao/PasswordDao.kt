@@ -80,6 +80,10 @@ interface PasswordDao {
     @Query("SELECT * FROM password_history WHERE passwordId = :passwordId ORDER BY changedAt DESC")
     suspend fun historyForOnce(passwordId: String): List<PasswordHistoryEntity>
 
+    /** Raw history rows for the unlock-time integrity sweep. */
+    @Query("SELECT * FROM password_history")
+    suspend fun allHistoryOnce(): List<PasswordHistoryEntity>
+
     /** Keeps only the [keep] most-recent history rows for a credential, deleting older ones. */
     @Query(
         "DELETE FROM password_history WHERE passwordId = :passwordId AND id NOT IN (" +

@@ -3,6 +3,7 @@ package com.offlinevault
 import android.content.Context
 import com.offlinevault.data.backup.BackupManager
 import com.offlinevault.data.db.AppDatabase
+import com.offlinevault.data.db.VaultIntegrityChecker
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
@@ -17,6 +18,7 @@ class AppContainer(context: Context) {
 
     val securityPreferences = SecurityPreferences(context.applicationContext)
     val keyManager = KeyManager(securityPreferences, mnemonicManager)
+    val integrityChecker = VaultIntegrityChecker(database)
 
     val vaultRepository = VaultRepository(database.vaultDao())
     val passwordRepository = PasswordRepository(database.passwordDao())

@@ -42,6 +42,25 @@ class OfflineVaultApp : Application() {
                 if (!SessionManager.isUnlocked) {
                     return@collect
                 }
+                val integrity = withContext(Dispatchers.IO) {
+                    runCatching { container.integrityChecker.inspect() }.getOrNull()
+                }
+                if (integrity?.databaseHealthy == false) {
+                    SessionManager.lock()
+                    Toast.makeText(
+                        this@OfflineVaultApp,
+                        "密码库结构校验失败，已锁定以保护数据。请使用加密备份恢复。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@collect
+                }
+                if (integrity?.hasEncryptedDataIssues == true) {
+                    Toast.makeText(
+                        this@OfflineVaultApp,
+                        "发现损坏或被修改的密码记录，已隔离异常项目。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 persistPendingAutofillSave()
             }
         }

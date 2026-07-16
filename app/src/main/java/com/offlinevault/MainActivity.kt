@@ -52,6 +52,7 @@ import com.offlinevault.ui.theme.OfflineVaultTheme
 import com.offlinevault.ui.theme.VaultBackground
 import com.offlinevault.ui.theme.VaultBackgroundElevated
 import com.offlinevault.utils.BiometricHelper
+import com.offlinevault.utils.ClipboardHelper
 import com.offlinevault.viewmodel.AppLockState
 import com.offlinevault.viewmodel.AuthViewModel
 import com.offlinevault.viewmodel.PasswordDetailViewModel
@@ -226,6 +227,14 @@ private fun AppRoot() {
     val mnemonicEnabled by authVm.mnemonicEnabled.collectAsStateWithLifecycle()
     val credentialType by authVm.credentialType.collectAsStateWithLifecycle()
     val clipboardSeconds by settingsVm.clipboardClearSeconds.collectAsStateWithLifecycle()
+
+    // A copied password should not outlive an unlocked session, even if the user selected a
+    // longer clipboard timeout. ClipboardHelper only clears clips it marked as app-owned.
+    LaunchedEffect(lockState) {
+        if (lockState == AppLockState.LOCKED) {
+            ClipboardHelper.clearPendingSensitive(activity.applicationContext)
+        }
+    }
 
     val biometricAvailable = remember { BiometricHelper.canAuthenticate(activity) }
 

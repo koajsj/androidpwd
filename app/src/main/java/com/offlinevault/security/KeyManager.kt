@@ -47,18 +47,19 @@ class KeyManager(
         val masterSalt = CryptoManager.newSalt()
         val recoverySalt = CryptoManager.newSalt()
 
-        val iterations = CryptoManager.DEFAULT_PBKDF2_ITERATIONS
-        val masterKey = CryptoManager.deriveKey(masterPassword.toCharArray(), masterSalt, iterations)
-        val recoveryKey = CryptoManager.deriveKey(normalizeAnswer(recoveryAnswer).toCharArray(), recoverySalt, iterations)
+        val kdf = KdfVersions.current()
+        val masterKey = CryptoManager.deriveKey(masterPassword.toCharArray(), masterSalt, kdf)
+        val recoveryKey = CryptoManager.deriveKey(normalizeAnswer(recoveryAnswer).toCharArray(), recoverySalt, kdf)
         val normalizedMnemonic = mnemonicManager.normalize(mnemonicPhrase)
         require(mnemonicManager.isValidPhrase(normalizedMnemonic)) { "助记词格式无效" }
         val mnemonicSalt = CryptoManager.newSalt()
-        val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, mnemonicSalt)
+        val mnemonicKdf = KdfVersions.current()
+        val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, mnemonicSalt, mnemonicKdf)
 
         val masterWrapped = wrapDek(masterKey, dek)
         val recoveryWrapped = wrapDek(recoveryKey, dek)
         val mnemonicWrapped = wrapDek(mnemonicKey, dek)
-        val mnemonicVerifierHash = mnemonicManager.verifierHash(normalizedMnemonic, mnemonicSalt)
+        val mnemonicVerifierHash = mnemonicManager.verifierHash(normalizedMnemonic, mnemonicSalt, mnemonicKdf)
 
         prefs.saveVaultMaterial(
             masterSalt = CryptoManager.encode(masterSalt),
@@ -66,11 +67,15 @@ class KeyManager(
             masterWrappedDek = encodeWrappedDek(masterWrapped),
             recoveryWrappedDek = encodeWrappedDek(recoveryWrapped),
             recoveryQuestion = recoveryQuestion,
-            masterIterations = iterations,
-            recoveryIterations = iterations,
+            masterIterations = kdf.iterations,
+            recoveryIterations = kdf.iterations,
+            masterKdfVersion = kdf.version,
+            recoveryKdfVersion = kdf.version,
             mnemonicSalt = CryptoManager.encode(mnemonicSalt),
             mnemonicWrappedDek = encodeWrappedDek(mnemonicWrapped),
-            mnemonicVerifierHash = encodeProtectedString(mnemonicVerifierHash)
+            mnemonicVerifierHash = encodeProtectedString(mnemonicVerifierHash),
+            mnemonicIterations = mnemonicKdf.iterations,
+            mnemonicKdfVersion = mnemonicKdf.version
         )
         prefs.resetFailures()
         SessionManager.unlock(dek)
@@ -96,7 +101,7 @@ class KeyManager(
             val masterKey = CryptoManager.deriveKey(
                 masterPassword.toCharArray(),
                 CryptoManager.decode(saltB64),
-                prefs.masterIterations()
+                masterKdfSpec()
             )
             val dekBytes = CryptoManager.decrypt(masterKey, wrappedDek)
             prefs.resetFailures()
@@ -124,7 +129,7 @@ class KeyManager(
             val recoveryKey = CryptoManager.deriveKey(
                 normalizeAnswer(recoveryAnswer).toCharArray(),
                 CryptoManager.decode(saltB64),
-                prefs.recoveryIterations()
+                recoveryKdfSpec()
             )
             CryptoManager.decrypt(recoveryKey, wrappedDek)
         } catch (e: CancellationException) {
@@ -159,11 +164,12 @@ class KeyManager(
 
         val dekBytes = try {
             val salt = CryptoManager.decode(saltB64)
-            if (!mnemonicManager.verifierMatches(normalizedMnemonic, salt, verifierHash)) {
+            val mnemonicKdf = mnemonicKdfSpec()
+            if (!mnemonicManager.verifierMatches(normalizedMnemonic, salt, verifierHash, mnemonicKdf)) {
                 prefs.recordFailure()
                 return UnlockResult.WrongCredential
             }
-            val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, salt)
+            val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, salt, mnemonicKdf)
             CryptoManager.decrypt(mnemonicKey, wrappedDek)
         } catch (e: CancellationException) {
             throw e
@@ -192,7 +198,7 @@ class KeyManager(
             val oldKey = CryptoManager.deriveKey(
                 oldPassword.toCharArray(),
                 CryptoManager.decode(saltB64),
-                prefs.masterIterations()
+                masterKdfSpec()
             )
             CryptoManager.decrypt(oldKey, wrappedDek)
         } catch (e: CancellationException) {
@@ -221,7 +227,7 @@ class KeyManager(
             val masterKey = CryptoManager.deriveKey(
                 masterPassword.toCharArray(),
                 CryptoManager.decode(saltB64),
-                prefs.masterIterations()
+                masterKdfSpec()
             )
             val dekBytes = CryptoManager.decrypt(masterKey, wrappedDek)
             dekBytes.fill(0)
@@ -243,14 +249,15 @@ class KeyManager(
         require(answer.isNotBlank()) { "安全问题答案不能为空" }
         val dek = SessionManager.requireKey()
         val salt = CryptoManager.newSalt()
-        val iterations = CryptoManager.DEFAULT_PBKDF2_ITERATIONS
-        val recoveryKey = CryptoManager.deriveKey(normalizeAnswer(answer).toCharArray(), salt, iterations)
+        val kdf = KdfVersions.current()
+        val recoveryKey = CryptoManager.deriveKey(normalizeAnswer(answer).toCharArray(), salt, kdf)
         val wrapped = wrapDek(recoveryKey, dek)
         prefs.updateRecoveryMaterial(
             recoverySalt = CryptoManager.encode(salt),
             recoveryWrappedDek = encodeWrappedDek(wrapped),
             recoveryQuestion = question,
-            recoveryIterations = iterations
+            recoveryIterations = kdf.iterations,
+            recoveryKdfVersion = kdf.version
         )
     }
 
@@ -265,12 +272,15 @@ class KeyManager(
         if (!mnemonicManager.isValidPhrase(normalizedMnemonic)) return UnlockResult.Error("助记词格式无效")
 
         val salt = CryptoManager.newSalt()
-        val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, salt)
+        val mnemonicKdf = KdfVersions.current()
+        val mnemonicKey = mnemonicManager.deriveRecoveryKey(normalizedMnemonic, salt, mnemonicKdf)
         val wrapped = wrapDek(mnemonicKey, dek)
         prefs.updateMnemonicMaterial(
             mnemonicSalt = CryptoManager.encode(salt),
             mnemonicWrappedDek = encodeWrappedDek(wrapped),
-            mnemonicVerifierHash = encodeProtectedString(mnemonicManager.verifierHash(normalizedMnemonic, salt))
+            mnemonicVerifierHash = encodeProtectedString(mnemonicManager.verifierHash(normalizedMnemonic, salt, mnemonicKdf)),
+            mnemonicIterations = mnemonicKdf.iterations,
+            mnemonicKdfVersion = mnemonicKdf.version
         )
         prefs.resetFailures()
         return UnlockResult.Success
@@ -291,13 +301,14 @@ class KeyManager(
 
     private suspend fun rewrapMaster(dek: SecretKey, newPassword: String) {
         val salt = CryptoManager.newSalt()
-        val iterations = CryptoManager.DEFAULT_PBKDF2_ITERATIONS
-        val masterKey = CryptoManager.deriveKey(newPassword.toCharArray(), salt, iterations)
+        val kdf = KdfVersions.current()
+        val masterKey = CryptoManager.deriveKey(newPassword.toCharArray(), salt, kdf)
         val wrapped = wrapDek(masterKey, dek)
         prefs.updateMasterMaterial(
             masterSalt = CryptoManager.encode(salt),
             masterWrappedDek = encodeWrappedDek(wrapped),
-            masterIterations = iterations
+            masterIterations = kdf.iterations,
+            masterKdfVersion = kdf.version
         )
     }
 
@@ -308,7 +319,7 @@ class KeyManager(
             val masterKey = CryptoManager.deriveKey(
                 masterPassword.toCharArray(),
                 CryptoManager.decode(saltB64),
-                prefs.masterIterations()
+                masterKdfSpec()
             )
             secretKeyFromBytes(CryptoManager.decrypt(masterKey, wrappedDek))
         } catch (e: CancellationException) {
@@ -333,31 +344,57 @@ class KeyManager(
             dekBytes.fill(0)
         }
         val blob = KeystoreManager.joinIv(authenticatedCipher.iv, ciphertext)
-        prefs.setBiometric(enabled = true, wrappedDek = CryptoManager.encode(blob))
+        try {
+            prefs.setBiometric(enabled = true, wrappedDek = CryptoManager.encode(blob))
+        } finally {
+            ciphertext.fill(0)
+            blob.fill(0)
+        }
     }
 
     suspend fun disableBiometric() {
         prefs.setBiometric(enabled = false, wrappedDek = null)
-        KeystoreManager.deleteKey()
+        KeystoreManager.deleteBiometricKey()
     }
 
     /** Builds a decrypt cipher (gated by biometrics) for the stored wrapped DEK, or null if unavailable. */
     suspend fun biometricDecryptCipher(): Cipher? {
         val blobB64 = prefs.biometricWrappedDek() ?: return null
         if (!KeystoreManager.hasKey()) return null
-        val (iv, _) = KeystoreManager.splitIv(CryptoManager.decode(blobB64))
-        return runCatching { KeystoreManager.decryptCipher(iv) }.getOrNull()
+        val blob = CryptoManager.decode(blobB64)
+        val (iv, ciphertext) = try {
+            KeystoreManager.splitIv(blob)
+        } finally {
+            blob.fill(0)
+        }
+        return try {
+            KeystoreManager.decryptCipher(iv)
+        } catch (_: Exception) {
+            null
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     /** Completes biometric unlock using the authenticated decrypt cipher. */
     suspend fun unlockWithBiometricCipher(authenticatedCipher: Cipher): UnlockResult {
         val blobB64 = prefs.biometricWrappedDek() ?: return UnlockResult.Error("尚未启用指纹解锁")
         return try {
-            val (_, ciphertext) = KeystoreManager.splitIv(CryptoManager.decode(blobB64))
-            val dekBytes = authenticatedCipher.doFinal(ciphertext)
-            prefs.resetFailures()
-            SessionManager.unlock(secretKeyFromBytes(dekBytes))
-            UnlockResult.Success
+            val blob = CryptoManager.decode(blobB64)
+            val (_, ciphertext) = try {
+                KeystoreManager.splitIv(blob)
+            } finally {
+                blob.fill(0)
+            }
+            try {
+                val dekBytes = authenticatedCipher.doFinal(ciphertext)
+                prefs.resetFailures()
+                SessionManager.unlock(secretKeyFromBytes(dekBytes))
+                UnlockResult.Success
+            } finally {
+                ciphertext.fill(0)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -378,7 +415,11 @@ class KeyManager(
 
     private fun encodeWrappedDek(wrappedDek: ByteArray): String {
         val deviceWrapped = KeystoreManager.wrapWithDeviceKey(wrappedDek)
-        return DEVICE_WRAPPED_PREFIX + CryptoManager.encode(deviceWrapped)
+        return try {
+            DEVICE_WRAPPED_PREFIX + CryptoManager.encode(deviceWrapped)
+        } finally {
+            deviceWrapped.fill(0)
+        }
     }
 
     private suspend fun masterWrappedDekBytes(): ByteArray? =
@@ -399,7 +440,12 @@ class KeyManager(
     ): ByteArray? {
         if (stored.isNullOrBlank()) return null
         return if (stored.startsWith(DEVICE_WRAPPED_PREFIX)) {
-            KeystoreManager.unwrapWithDeviceKey(CryptoManager.decode(stored.removePrefix(DEVICE_WRAPPED_PREFIX)))
+            val blob = CryptoManager.decode(stored.removePrefix(DEVICE_WRAPPED_PREFIX))
+            try {
+                KeystoreManager.unwrapWithDeviceKey(blob)
+            } finally {
+                blob.fill(0)
+            }
         } else {
             val legacy = CryptoManager.decode(stored)
             persistMigrated(encodeWrappedDek(legacy))
@@ -440,6 +486,15 @@ class KeyManager(
         } finally {
             bytes.fill(0)
         }
+
+    private suspend fun masterKdfSpec(): KdfSpec =
+        KdfVersions.stored(prefs.masterKdfVersion(), prefs.masterIterations())
+
+    private suspend fun recoveryKdfSpec(): KdfSpec =
+        KdfVersions.stored(prefs.recoveryKdfVersion(), prefs.recoveryIterations())
+
+    private suspend fun mnemonicKdfSpec(): KdfSpec =
+        KdfVersions.stored(prefs.mnemonicKdfVersion(), prefs.mnemonicIterations())
 
     /** Normalises recovery answers so capitalisation / surrounding spaces don't matter. */
     private fun normalizeAnswer(answer: String): String = answer.trim().lowercase()

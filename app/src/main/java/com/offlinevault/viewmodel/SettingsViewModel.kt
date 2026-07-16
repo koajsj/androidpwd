@@ -23,6 +23,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import javax.crypto.Cipher
+import java.security.InvalidKeyException
+import android.security.keystore.KeyPermanentlyInvalidatedException
 
 class SettingsViewModel(
     private val keyManager: KeyManager,
@@ -212,12 +214,15 @@ class SettingsViewModel(
         // Otherwise cancelling a re-enable attempt would silently break an already usable
         // biometric unlock. Enrollment changes already invalidate the key at the Keystore level;
         // only rebuild when the existing material can no longer initialise a Cipher.
-        val cipher = runCatching { KeystoreManager.encryptCipher() }
-            .recoverCatching {
-                KeystoreManager.deleteKey()
-                KeystoreManager.encryptCipher()
-            }
-            .getOrNull()
+        val cipher = try {
+            KeystoreManager.encryptCipher()
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
+        } catch (_: InvalidKeyException) {
+            runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
+        } catch (_: Exception) {
+            null
+        }
         onReady(cipher)
     }
 

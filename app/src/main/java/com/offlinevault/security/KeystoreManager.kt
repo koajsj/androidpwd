@@ -70,17 +70,36 @@ object KeystoreManager {
         return generator.generateKey()
     }
 
-    fun deleteKey() {
-        runCatching { keyStore().deleteEntry(KEY_ALIAS) }
-    }
+    /** Deletes only the biometric-bound key and never touches the material-protection key. */
+    fun deleteBiometricKey(): Boolean = deleteAlias(KEY_ALIAS)
+
+    /**
+     * Deletes the key that protects wrapped DataStore material. This is only safe after the
+     * corresponding encrypted preferences have been deliberately erased as part of a full reset;
+     * deleting it independently makes existing wrapped DEKs unrecoverable.
+     */
+    fun deleteMaterialKeyForFullReset(): Boolean = deleteAlias(MATERIAL_KEY_ALIAS)
+
+    /** Full-reset helper: callers must erase protected preferences before invoking this. */
+    fun deleteAllKeysForFullReset(): Boolean =
+        deleteBiometricKey() and deleteMaterialKeyForFullReset()
 
     fun hasKey(): Boolean = runCatching { keyStore().containsAlias(KEY_ALIAS) }.getOrDefault(false)
+
+    fun hasMaterialKey(): Boolean =
+        runCatching { keyStore().containsAlias(MATERIAL_KEY_ALIAS) }.getOrDefault(false)
 
     /** Cipher used to ENCRYPT the DEK. Must be passed to BiometricPrompt before use. */
     fun encryptCipher(): Cipher {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         return cipher
+    }
+
+    /** Recreates only an invalid biometric key; the material-protection key remains untouched. */
+    fun recreateBiometricEncryptCipher(): Cipher {
+        deleteBiometricKey()
+        return encryptCipher()
     }
 
     /** Cipher used to DECRYPT the DEK with the stored IV. Must be passed to BiometricPrompt. */
@@ -112,4 +131,9 @@ object KeystoreManager {
         cipher.init(Cipher.DECRYPT_MODE, getOrCreateMaterialKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher.doFinal(ciphertext)
     }
+
+    private fun deleteAlias(alias: String): Boolean = runCatching {
+        keyStore().deleteEntry(alias)
+        true
+    }.getOrDefault(false)
 }

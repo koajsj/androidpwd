@@ -21,6 +21,7 @@ object ClipboardHelper {
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingClear: Runnable? = null
+    private var pendingMarker: String? = null
 
     fun copySensitive(context: Context, label: String, value: String, clearAfterSeconds: Int) {
         val effectiveClearSeconds =
@@ -41,6 +42,7 @@ object ClipboardHelper {
 
         pendingClear?.let { handler.removeCallbacks(it) }
         pendingClear = null
+        pendingMarker = marker
         val runnable = Runnable { clear(appContext, marker) }
         pendingClear = runnable
         handler.postDelayed(runnable, effectiveClearSeconds * 1000L)
@@ -49,6 +51,14 @@ object ClipboardHelper {
     fun copyPlain(context: Context, label: String, value: String) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, value)) }
+    }
+
+    /** Clears the app-owned sensitive clip immediately when the vault locks. */
+    fun clearPendingSensitive(context: Context) {
+        val marker = pendingMarker ?: return
+        pendingClear?.let { handler.removeCallbacks(it) }
+        pendingClear = null
+        clear(context.applicationContext, marker)
     }
 
     /**
@@ -69,6 +79,7 @@ object ClipboardHelper {
                 }
             }
         }
+        if (pendingMarker == expectedMarker) pendingMarker = null
         pendingClear = null
     }
 }

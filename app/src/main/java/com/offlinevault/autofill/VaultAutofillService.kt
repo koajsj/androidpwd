@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Offline autofill service. It NEVER touches the network — it only reads the locally decrypted
@@ -37,6 +38,9 @@ import kotlinx.coroutines.launch
 class VaultAutofillService : AutofillService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // PendingIntent identity ignores extras. A unique request code prevents concurrent forms from
+    // overwriting each other's AutofillId extras through FLAG_UPDATE_CURRENT.
+    private val nextAuthenticationRequestCode = AtomicInteger()
 
     private data class ParsedFields(
         val usernameId: AutofillId?,
@@ -288,7 +292,7 @@ class VaultAutofillService : AutofillService() {
         )
         val pendingIntent = PendingIntent.getActivity(
             this,
-            targetLabel.hashCode(),
+            nextAuthenticationRequestCode.getAndIncrement(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

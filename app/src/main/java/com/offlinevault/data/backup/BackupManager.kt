@@ -7,6 +7,7 @@ import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
+import com.offlinevault.security.KdfVersions
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -71,8 +72,9 @@ class BackupManager(
         val plainJson = gson.toJson(BackupData(vaults, items))
 
         val salt = CryptoManager.newSalt()
-        val iterations = CryptoManager.DEFAULT_PBKDF2_ITERATIONS
-        val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, iterations)
+        val kdf = KdfVersions.current()
+        val iterations = kdf.iterations
+        val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
         val plainBytes = plainJson.toByteArray(Charsets.UTF_8)
         val integrityHash = CryptoManager.sha256Hex(plainBytes)
         val blob = try {
@@ -85,6 +87,7 @@ class BackupManager(
             salt = CryptoManager.encode(salt),
             data = CryptoManager.encode(blob),
             iterations = iterations,
+            kdfVersion = kdf.version,
             integrityHash = integrityHash
         )
         val result = gson.toJson(wrapper)
@@ -512,7 +515,8 @@ class BackupManager(
                 if (wrapper.iterations > 0) wrapper.iterations
                 else CryptoManager.LEGACY_PBKDF2_ITERATIONS
             )
-            val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, iterations)
+            val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
+            val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
             val plainBytes = CryptoManager.decrypt(key, CryptoManager.decode(wrapper.data))
             if (wrapper.integrityHash.isNotBlank() &&
                 !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)

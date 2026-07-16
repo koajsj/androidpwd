@@ -33,6 +33,8 @@ data class EncryptedBackup(
     val data: String = "",
     /** PBKDF2 iterations used to derive the backup key. 0/absent => legacy backup. */
     val iterations: Int = 0,
+    /** KDF algorithm identifier. Empty means the legacy PBKDF2-HMAC-SHA256 format. */
+    val kdfVersion: String = "",
     /** SHA-256 of the decrypted JSON payload. Empty means legacy backup. */
     val integrityHash: String = ""
 )

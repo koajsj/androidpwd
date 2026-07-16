@@ -42,11 +42,15 @@ class SecurityPreferences(private val context: Context) {
         val MNEMONIC_SALT = stringPreferencesKey("mnemonic_salt")
         val MNEMONIC_WRAPPED_DEK = stringPreferencesKey("mnemonic_wrapped_dek")
         val MNEMONIC_VERIFIER_HASH = stringPreferencesKey("mnemonic_verifier_hash")
+        val MNEMONIC_ITERATIONS = intPreferencesKey("mnemonic_iterations")
+        val MNEMONIC_KDF_VERSION = stringPreferencesKey("mnemonic_kdf_version")
 
         // PBKDF2 iteration counts the master / recovery keys were derived with. Persisted so the
         // default can be raised over time without locking existing vaults out. Absent => legacy.
         val MASTER_ITERATIONS = intPreferencesKey("master_iterations")
         val RECOVERY_ITERATIONS = intPreferencesKey("recovery_iterations")
+        val MASTER_KDF_VERSION = stringPreferencesKey("master_kdf_version")
+        val RECOVERY_KDF_VERSION = stringPreferencesKey("recovery_kdf_version")
 
         val CREDENTIAL_TYPE = stringPreferencesKey("credential_type")
 
@@ -81,9 +85,13 @@ class SecurityPreferences(private val context: Context) {
         recoveryQuestion: String,
         masterIterations: Int,
         recoveryIterations: Int,
+        masterKdfVersion: String,
+        recoveryKdfVersion: String,
         mnemonicSalt: String,
         mnemonicWrappedDek: String,
-        mnemonicVerifierHash: String
+        mnemonicVerifierHash: String,
+        mnemonicIterations: Int,
+        mnemonicKdfVersion: String
     ) {
         context.dataStore.edit {
             it[Keys.MASTER_SALT] = masterSalt
@@ -93,17 +101,27 @@ class SecurityPreferences(private val context: Context) {
             it[Keys.RECOVERY_QUESTION] = recoveryQuestion
             it[Keys.MASTER_ITERATIONS] = masterIterations
             it[Keys.RECOVERY_ITERATIONS] = recoveryIterations
+            it[Keys.MASTER_KDF_VERSION] = masterKdfVersion
+            it[Keys.RECOVERY_KDF_VERSION] = recoveryKdfVersion
             it[Keys.MNEMONIC_SALT] = mnemonicSalt
             it[Keys.MNEMONIC_WRAPPED_DEK] = mnemonicWrappedDek
             it[Keys.MNEMONIC_VERIFIER_HASH] = mnemonicVerifierHash
+            it[Keys.MNEMONIC_ITERATIONS] = mnemonicIterations
+            it[Keys.MNEMONIC_KDF_VERSION] = mnemonicKdfVersion
         }
     }
 
-    suspend fun updateMasterMaterial(masterSalt: String, masterWrappedDek: String, masterIterations: Int) {
+    suspend fun updateMasterMaterial(
+        masterSalt: String,
+        masterWrappedDek: String,
+        masterIterations: Int,
+        masterKdfVersion: String
+    ) {
         context.dataStore.edit {
             it[Keys.MASTER_SALT] = masterSalt
             it[Keys.MASTER_WRAPPED_DEK] = masterWrappedDek
             it[Keys.MASTER_ITERATIONS] = masterIterations
+            it[Keys.MASTER_KDF_VERSION] = masterKdfVersion
         }
     }
 
@@ -115,13 +133,15 @@ class SecurityPreferences(private val context: Context) {
         recoverySalt: String,
         recoveryWrappedDek: String,
         recoveryQuestion: String,
-        recoveryIterations: Int
+        recoveryIterations: Int,
+        recoveryKdfVersion: String
     ) {
         context.dataStore.edit {
             it[Keys.RECOVERY_SALT] = recoverySalt
             it[Keys.RECOVERY_WRAPPED_DEK] = recoveryWrappedDek
             it[Keys.RECOVERY_QUESTION] = recoveryQuestion
             it[Keys.RECOVERY_ITERATIONS] = recoveryIterations
+            it[Keys.RECOVERY_KDF_VERSION] = recoveryKdfVersion
         }
     }
 
@@ -142,6 +162,13 @@ class SecurityPreferences(private val context: Context) {
         context.dataStore.data.first()[Keys.MASTER_ITERATIONS] ?: CryptoManager.LEGACY_PBKDF2_ITERATIONS
     suspend fun recoveryIterations(): Int =
         context.dataStore.data.first()[Keys.RECOVERY_ITERATIONS] ?: CryptoManager.LEGACY_PBKDF2_ITERATIONS
+
+    suspend fun masterKdfVersion(): String? = context.dataStore.data.first()[Keys.MASTER_KDF_VERSION]
+    suspend fun recoveryKdfVersion(): String? = context.dataStore.data.first()[Keys.RECOVERY_KDF_VERSION]
+    // Existing mnemonic material was created with the then-current PBKDF2 default (300k).
+    suspend fun mnemonicIterations(): Int =
+        context.dataStore.data.first()[Keys.MNEMONIC_ITERATIONS] ?: CryptoManager.DEFAULT_PBKDF2_ITERATIONS
+    suspend fun mnemonicKdfVersion(): String? = context.dataStore.data.first()[Keys.MNEMONIC_KDF_VERSION]
 
     // Legacy compatibility: vaults created before the credential type existed were password-only.
     // If no type was stored but a vault already exists, treat it as a password so the unlock screen
@@ -173,12 +200,16 @@ class SecurityPreferences(private val context: Context) {
     suspend fun updateMnemonicMaterial(
         mnemonicSalt: String,
         mnemonicWrappedDek: String,
-        mnemonicVerifierHash: String
+        mnemonicVerifierHash: String,
+        mnemonicIterations: Int,
+        mnemonicKdfVersion: String
     ) {
         context.dataStore.edit {
             it[Keys.MNEMONIC_SALT] = mnemonicSalt
             it[Keys.MNEMONIC_WRAPPED_DEK] = mnemonicWrappedDek
             it[Keys.MNEMONIC_VERIFIER_HASH] = mnemonicVerifierHash
+            it[Keys.MNEMONIC_ITERATIONS] = mnemonicIterations
+            it[Keys.MNEMONIC_KDF_VERSION] = mnemonicKdfVersion
         }
     }
 
@@ -195,6 +226,8 @@ class SecurityPreferences(private val context: Context) {
             it.remove(Keys.MNEMONIC_SALT)
             it.remove(Keys.MNEMONIC_WRAPPED_DEK)
             it.remove(Keys.MNEMONIC_VERIFIER_HASH)
+            it.remove(Keys.MNEMONIC_ITERATIONS)
+            it.remove(Keys.MNEMONIC_KDF_VERSION)
         }
     }
 

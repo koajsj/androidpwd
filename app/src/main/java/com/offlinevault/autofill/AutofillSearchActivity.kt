@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -56,6 +57,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private data class AutofillCandidate(
+    val item: DecryptedPassword,
+    val matchesTarget: Boolean
+)
 
 class AutofillSearchActivity : FragmentActivity() {
 
@@ -98,20 +104,19 @@ class AutofillSearchActivity : FragmentActivity() {
         val app = application as OfflineVaultApp
         val loadingState = mutableStateOf(true)
         val errorState = mutableStateOf<String?>(null)
-        val itemsState = mutableStateOf<List<DecryptedPassword>>(emptyList())
+        val itemsState = mutableStateOf<List<AutofillCandidate>>(emptyList())
 
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
                     val all = app.container.passwordRepository.allDecryptedSkippingCorrupt()
-                    val ranked = all.sortedByDescending { candidate ->
-                        when {
-                            !webDomain.isNullOrBlank() && OriginMatcher.matches(candidate.url, webDomain) -> 2
-                            !packageName.isNullOrBlank() && OriginMatcher.matchesApp(candidate.url, packageName) -> 2
-                            else -> 0
-                        }
-                    }
-                    ranked
+                    all.map { candidate ->
+                        AutofillCandidate(
+                            item = candidate,
+                            matchesTarget = (!webDomain.isNullOrBlank() && OriginMatcher.matches(candidate.url, webDomain)) ||
+                                (!packageName.isNullOrBlank() && OriginMatcher.matchesApp(candidate.url, packageName))
+                        )
+                    }.sortedByDescending { it.matchesTarget }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -132,7 +137,7 @@ class AutofillSearchActivity : FragmentActivity() {
                     targetLabel = targetLabel,
                     loading = loadingState.value,
                     error = errorState.value,
-                    allItems = itemsState.value,
+                    candidates = itemsState.value,
                     onBack = { finish() },
                     onPick = { item ->
                         if (!SessionManager.isUnlocked) {
@@ -194,19 +199,23 @@ private fun AutofillSearchScreen(
     targetLabel: String,
     loading: Boolean,
     error: String?,
-    allItems: List<DecryptedPassword>,
+    candidates: List<AutofillCandidate>,
     onBack: () -> Unit,
     onPick: (DecryptedPassword) -> Unit
 ) {
     var query by remember { mutableStateOf("") }
-    val filtered = remember(query, allItems) {
+    var showAll by remember { mutableStateOf(false) }
+    var showAllConfirmation by remember { mutableStateOf(false) }
+    var pendingNonMatching by remember { mutableStateOf<AutofillCandidate?>(null) }
+    val visibleCandidates = if (showAll) candidates else candidates.filter { it.matchesTarget }
+    val filtered = remember(query, visibleCandidates) {
         val keyword = query.trim()
-        if (keyword.isBlank()) allItems
-        else allItems.filter { item ->
+        if (keyword.isBlank()) visibleCandidates
+        else visibleCandidates.filter { candidate ->
+            val item = candidate.item
             item.title.contains(keyword, ignoreCase = true) ||
                 item.username.contains(keyword, ignoreCase = true) ||
-                item.url.contains(keyword, ignoreCase = true) ||
-                item.note.contains(keyword, ignoreCase = true)
+                item.url.contains(keyword, ignoreCase = true)
         }
     }
 
@@ -242,6 +251,22 @@ private fun AutofillSearchScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (!showAll) {
+                Text(
+                    "仅显示与当前网站或应用精确匹配的账号。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(onClick = { showAllConfirmation = true }) {
+                    Text("手动查看其他密码库项目")
+                }
+            } else {
+                Text(
+                    "正在显示全部项目。填充不匹配项目时将再次确认。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = query,
@@ -262,16 +287,23 @@ private fun AutofillSearchScreen(
                 }
 
                 filtered.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("没有匹配的密码项", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (showAll) "没有匹配的密码项" else "没有与当前目标匹配的密码项",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(filtered, key = { it.id }) { item ->
+                    items(filtered, key = { it.item.id }) { candidate ->
+                        val item = candidate.item
                         SectionCard {
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .clickable { onPick(item) }
+                                    .clickable {
+                                        if (candidate.matchesTarget) onPick(item)
+                                        else pendingNonMatching = candidate
+                                    }
                                     .padding(vertical = 8.dp)
                             ) {
                                 Text(item.title.ifEmpty { "未命名项目" }, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
@@ -288,5 +320,39 @@ private fun AutofillSearchScreen(
                 }
             }
         }
+    }
+
+    if (showAllConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showAllConfirmation = false },
+            title = { Text("查看全部项目？") },
+            text = { Text("当前网站或应用的身份由系统自动填充框架提供，无法由本应用独立验证。只应在确认目标可信时手动选择其他项目。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showAllConfirmation = false
+                    showAll = true
+                }) { Text("继续查看") }
+            },
+            dismissButton = { TextButton(onClick = { showAllConfirmation = false }) { Text("取消") } }
+        )
+    }
+
+    pendingNonMatching?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { pendingNonMatching = null },
+            title = { Text("确认填充到当前目标？") },
+            text = {
+                Text(
+                    "“${candidate.item.title.ifBlank { "未命名项目" }}”与当前目标“$targetLabel”不匹配。确认后，其账号和密码将填写到当前页面。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingNonMatching = null
+                    onPick(candidate.item)
+                }) { Text("确认填充") }
+            },
+            dismissButton = { TextButton(onClick = { pendingNonMatching = null }) { Text("取消") } }
+        )
     }
 }

@@ -38,11 +38,14 @@ class MnemonicManager {
         return phraseWords.size == WORD_COUNT && phraseWords.all { it in wordSet }
     }
 
-    fun deriveRecoveryKey(normalizedPhrase: String, salt: ByteArray): SecretKey =
-        CryptoManager.deriveKey(normalizedPhrase.toCharArray(), salt)
+    fun deriveRecoveryKey(
+        normalizedPhrase: String,
+        salt: ByteArray,
+        kdf: KdfSpec = KdfVersions.current()
+    ): SecretKey = CryptoManager.deriveKey(normalizedPhrase.toCharArray(), salt, kdf)
 
-    fun verifierHash(normalizedPhrase: String, salt: ByteArray): String {
-        val keyBytes = deriveRecoveryKey(normalizedPhrase, salt).encoded
+    fun verifierHash(normalizedPhrase: String, salt: ByteArray, kdf: KdfSpec = KdfVersions.current()): String {
+        val keyBytes = deriveRecoveryKey(normalizedPhrase, salt, kdf).encoded
         return try {
             val digest = MessageDigest.getInstance("SHA-256").digest(keyBytes)
             try {
@@ -55,8 +58,13 @@ class MnemonicManager {
         }
     }
 
-    fun verifierMatches(normalizedPhrase: String, salt: ByteArray, expectedHash: String): Boolean {
-        val actual = CryptoManager.decode(verifierHash(normalizedPhrase, salt))
+    fun verifierMatches(
+        normalizedPhrase: String,
+        salt: ByteArray,
+        expectedHash: String,
+        kdf: KdfSpec = KdfVersions.current()
+    ): Boolean {
+        val actual = CryptoManager.decode(verifierHash(normalizedPhrase, salt, kdf))
         val expected = CryptoManager.decode(expectedHash)
         return try {
             MessageDigest.isEqual(actual, expected)
