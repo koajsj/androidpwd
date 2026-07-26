@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +41,21 @@ class PasswordEditViewModel(
     private var loadedKey: String? = null
     private var loadJob: Job? = null
     private var saveJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            SessionManager.unlocked.collect { unlocked ->
+                if (!unlocked) {
+                    loadJob?.cancel()
+                    saveJob?.cancel()
+                    loadedKey = null
+                    _form.value = EditFormState()
+                    _errorMessage.value = null
+                    _isSaving.value = false
+                }
+            }
+        }
+    }
 
     /** Loads either a new (vaultId set) or existing (passwordId set) form exactly once per target. */
     fun initialize(vaultId: String, passwordId: String?) {

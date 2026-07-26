@@ -32,4 +32,7 @@ interface VaultDao {
 
     @Query("SELECT * FROM vaults ORDER BY updatedAt DESC LIMIT 1")
     suspend fun firstVault(): VaultEntity?
+
+    @Query("UPDATE vaults SET name = :newName WHERE id = :id AND name = :oldName")
+    suspend fun migrateNameIfUnchanged(id: String, oldName: String, newName: String): Int
 }

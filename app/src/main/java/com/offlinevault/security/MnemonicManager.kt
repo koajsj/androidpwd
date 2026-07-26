@@ -52,7 +52,12 @@ class MnemonicManager {
     }
 
     fun verifierHash(normalizedPhrase: String, salt: ByteArray, kdf: KdfSpec = KdfVersions.current()): String {
-        val keyBytes = deriveRecoveryKey(normalizedPhrase, salt, kdf).encoded
+        val key = deriveRecoveryKey(normalizedPhrase, salt, kdf)
+        val keyBytes = try {
+            key.encoded
+        } finally {
+            CryptoManager.destroyKey(key)
+        }
         return try {
             val digest = MessageDigest.getInstance("SHA-256").digest(keyBytes)
             try {

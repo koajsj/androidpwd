@@ -11,6 +11,7 @@ import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultDeleteResult
 import com.offlinevault.data.repository.VaultRepository
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,6 +97,21 @@ class PasswordListViewModel(
     // Vault mutations are destructive or change the active destination. Keep them serial so a
     // rapid double-tap cannot create duplicate vaults or race a deletion against a rename.
     private var vaultMutationJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            SessionManager.unlocked.collect { unlocked ->
+                if (!unlocked) {
+                    vaultMutationJob?.cancel()
+                    mimakuId.value = ""
+                    _mimakuMingcheng.value = ""
+                    chaxun.value = ""
+                    biaoqianGuolv.value = null
+                    xuanzhong.value = emptySet()
+                }
+            }
+        }
+    }
 
     private data class ListQuery(val kuId: String, val query: String, val tag: String?, val sort: SortOrder)
 

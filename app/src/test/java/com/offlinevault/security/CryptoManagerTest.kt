@@ -2,6 +2,7 @@ package com.offlinevault.security
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class CryptoManagerTest {
@@ -40,5 +41,30 @@ class CryptoManagerTest {
         assertThrows(IllegalArgumentException::class.java) {
             KdfVersions.stored(KdfVersions.ARGON2ID_V1, CryptoManager.DEFAULT_PBKDF2_ITERATIONS)
         }
+    }
+
+    @Test fun aadBindsCiphertextToItsFieldContext() {
+        val key = CryptoManager.newDataEncryptionKey()
+        val plaintext = "secret".toByteArray()
+        val blob = CryptoManager.encrypt(key, plaintext, "credential:1:password".toByteArray())
+        try {
+            assertArrayEquals(
+                plaintext,
+                CryptoManager.decrypt(key, blob, "credential:1:password".toByteArray())
+            )
+            assertThrows(Exception::class.java) {
+                CryptoManager.decrypt(key, blob, "credential:1:note".toByteArray())
+            }
+        } finally {
+            plaintext.fill(0)
+            blob.fill(0)
+            CryptoManager.destroyKey(key)
+        }
+    }
+
+    @Test fun appManagedKeyCannotBeUsedAfterDestruction() {
+        val key = CryptoManager.newDataEncryptionKey()
+        CryptoManager.destroyKey(key)
+        assertThrows(IllegalStateException::class.java) { key.encoded }
     }
 }

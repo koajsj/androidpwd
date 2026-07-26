@@ -272,28 +272,19 @@ private fun AppRoot() {
     fun enableBiometric(onDone: (Boolean) -> Unit) {
         settingsVm.prepareEnableBiometricCipher { cipher ->
             if (cipher == null) { onDone(false); return@prepareEnableBiometricCipher }
-            LockGuard.suppressNextBackground = true
-            LockGuard.suppressAutoLockOnReturn = true
+            // Enabling biometrics happens from an already unlocked settings screen. It must obey
+            // the normal background auto-lock policy; only the locked-screen authentication flow
+            // may defer a lifecycle check while its CryptoObject is in flight.
             BiometricHelper.authenticate(
                 activity = activity,
                 title = "启用指纹解锁",
                 subtitle = "验证后启用指纹解锁",
                 cipher = cipher,
                 onSuccess = {
-                    LockGuard.suppressNextBackground = false
-                    LockGuard.suppressAutoLockOnReturn = false
                     settingsVm.finishEnableBiometric(it, onDone)
                 },
-                onError = {
-                    LockGuard.suppressNextBackground = false
-                    LockGuard.suppressAutoLockOnReturn = false
-                    onDone(false)
-                },
-                onCancel = {
-                    LockGuard.suppressNextBackground = false
-                    LockGuard.suppressAutoLockOnReturn = false
-                    onDone(false)
-                }
+                onError = { onDone(false) },
+                onCancel = { onDone(false) }
             )
         }
     }

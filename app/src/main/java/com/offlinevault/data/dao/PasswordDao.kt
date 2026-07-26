@@ -74,6 +74,16 @@ interface PasswordDao {
     @Insert
     suspend fun insertHistory(entry: PasswordHistoryEntity)
 
+    @Query(
+        "UPDATE password_history SET encryptedPassword = :newEncryptedPassword " +
+            "WHERE id = :id AND encryptedPassword = :oldEncryptedPassword"
+    )
+    suspend fun migrateHistoryEncryptionIfUnchanged(
+        id: String,
+        oldEncryptedPassword: String,
+        newEncryptedPassword: String
+    ): Int
+
     @Query("SELECT COUNT(*) FROM password_history WHERE passwordId = :passwordId")
     fun historyCount(passwordId: String): Flow<Int>
 
@@ -91,5 +101,28 @@ interface PasswordDao {
             "ORDER BY changedAt DESC LIMIT :keep)"
     )
     suspend fun pruneHistory(passwordId: String, keep: Int)
+
+    @Query(
+        "UPDATE passwords SET title = :newTitle, username = :newUsername, " +
+            "encryptedPassword = :newPassword, url = :newUrl, tags = :newTags, " +
+            "encryptedNote = :newNote WHERE id = :id AND title = :oldTitle " +
+            "AND username = :oldUsername AND encryptedPassword = :oldPassword " +
+            "AND url = :oldUrl AND tags = :oldTags AND encryptedNote = :oldNote"
+    )
+    suspend fun migrateEncryptionIfUnchanged(
+        id: String,
+        oldTitle: String,
+        oldUsername: String,
+        oldPassword: String,
+        oldUrl: String,
+        oldTags: String,
+        oldNote: String,
+        newTitle: String,
+        newUsername: String,
+        newPassword: String,
+        newUrl: String,
+        newTags: String,
+        newNote: String
+    ): Int
 
 }

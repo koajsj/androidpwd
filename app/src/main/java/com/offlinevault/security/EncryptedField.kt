@@ -1,19 +1,74 @@
 package com.offlinevault.security
 
-/** Versioned field encryption for searchable metadata that must not remain plaintext at rest. */
+/**
+ * Versioned field encryption for database values.
+ *
+ * v1 authenticated only the ciphertext. v2 additionally binds it to a stable record/field context
+ * through AES-GCM AAD, preventing valid ciphertext from being moved between fields or records.
+ */
 object EncryptedField {
-    private const val PREFIX = "enc:v1:"
+    private const val PREFIX_V1 = "enc:v1:"
+    private const val PREFIX_V2 = "enc:v2:"
+    private const val AAD_DOMAIN = "offline-vault-field:"
 
-    fun isEncrypted(value: String): Boolean = value.startsWith(PREFIX)
+    fun isContextBound(value: String): Boolean = value.startsWith(PREFIX_V2)
 
-    fun encrypt(value: String): String {
-        if (isEncrypted(value)) return value
-        return PREFIX + CryptoManager.encryptString(SessionManager.requireKey(), value)
+    /** Encrypts a caller-supplied plaintext value into the current context-bound format. */
+    fun encrypt(value: String, context: String): String {
+        return PREFIX_V2 + CryptoManager.encryptString(
+            SessionManager.requireKey(),
+            value,
+            aad(context)
+        )
     }
 
-    fun decrypt(value: String): String {
-        if (!isEncrypted(value)) return value // Legacy v1 row, migrated after the first unlock.
-        return CryptoManager.decryptString(SessionManager.requireKey(), value.removePrefix(PREFIX))
+    /** Upgrades a stored plaintext/v1 metadata value without double-encrypting current v2 data. */
+    fun migrate(value: String, context: String): String {
+        if (isContextBound(value)) return value
+        val plaintext = if (value.startsWith(PREFIX_V1)) {
+            CryptoManager.decryptString(SessionManager.requireKey(), value.removePrefix(PREFIX_V1))
+        } else {
+            value
+        }
+        return encrypt(plaintext, context)
+    }
+
+    /** Decrypts metadata; unprefixed plaintext is accepted only for the one-time legacy migration. */
+    fun decrypt(value: String, context: String): String = when {
+        value.startsWith(PREFIX_V2) ->
+            CryptoManager.decryptString(
+                SessionManager.requireKey(),
+                value.removePrefix(PREFIX_V2),
+                aad(context)
+            )
+        value.startsWith(PREFIX_V1) ->
+            CryptoManager.decryptString(SessionManager.requireKey(), value.removePrefix(PREFIX_V1))
+        else -> value
+    }
+
+    /** Encrypts a password/note field. Unlike metadata, plaintext is never accepted on decrypt. */
+    fun encryptSecret(value: String, context: String): String =
+        PREFIX_V2 + CryptoManager.encryptString(SessionManager.requireKey(), value, aad(context))
+
+    /** Reads current context-bound secrets and the unprefixed AES-GCM format used by older builds. */
+    fun decryptSecret(value: String, context: String): String =
+        if (value.startsWith(PREFIX_V2)) {
+            CryptoManager.decryptString(
+                SessionManager.requireKey(),
+                value.removePrefix(PREFIX_V2),
+                aad(context)
+            )
+        } else {
+            CryptoManager.decryptString(SessionManager.requireKey(), value)
+        }
+
+    fun migrateSecret(value: String, context: String): String =
+        if (isContextBound(value)) value else encryptSecret(decryptSecret(value, context), context)
+
+    private fun aad(context: String): String {
+        require(context.isNotBlank()) { "Encrypted field context is required" }
+        require(context.length <= 512) { "Encrypted field context is too large" }
+        return AAD_DOMAIN + context
     }
 }
 

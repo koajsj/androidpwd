@@ -1,6 +1,5 @@
 package com.offlinevault.data.db
 
-import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.SessionManager
 
@@ -30,25 +29,37 @@ class VaultIntegrityChecker(private val database: AppDatabase) {
         }.getOrDefault(false)
         if (!databaseHealthy) return VaultIntegrityReport(false, 0, 0, 0)
 
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         val invalidVaults = database.vaultDao().getAllVaultsOnce().count { vault ->
-            runCatching { EncryptedField.decrypt(vault.name) }.isFailure
+            runCatching {
+                EncryptedField.decrypt(vault.name, "vault:${vault.id}:name")
+            }.isFailure
         }
         val invalidCredentials = database.passwordDao().getAllIncludingTrashedOnce().count { row ->
             runCatching {
-                EncryptedField.decrypt(row.title)
-                EncryptedField.decrypt(row.username)
-                EncryptedField.decrypt(row.url)
-                EncryptedField.decrypt(row.tags)
-                CryptoManager.decryptString(key, row.encryptedPassword)
+                EncryptedField.decrypt(row.title, credentialContext(row.id, "title"))
+                EncryptedField.decrypt(row.username, credentialContext(row.id, "username"))
+                EncryptedField.decrypt(row.url, credentialContext(row.id, "url"))
+                EncryptedField.decrypt(row.tags, credentialContext(row.id, "tags"))
+                EncryptedField.decryptSecret(
+                    row.encryptedPassword,
+                    credentialContext(row.id, "password")
+                )
                 if (row.encryptedNote.isNotBlank()) {
-                    CryptoManager.decryptString(key, row.encryptedNote)
+                    EncryptedField.decryptSecret(row.encryptedNote, credentialContext(row.id, "note"))
                 }
             }.isFailure
         }
         val invalidHistory = database.passwordDao().allHistoryOnce().count { row ->
-            runCatching { CryptoManager.decryptString(key, row.encryptedPassword) }.isFailure
+            runCatching {
+                EncryptedField.decryptSecret(
+                    row.encryptedPassword,
+                    credentialContext(row.passwordId, "password")
+                )
+            }.isFailure
         }
         return VaultIntegrityReport(true, invalidVaults, invalidCredentials, invalidHistory)
     }
+
+    private fun credentialContext(id: String, field: String): String = "credential:$id:$field"
 }

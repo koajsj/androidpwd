@@ -92,7 +92,8 @@ class VaultAutofillService : AutofillService() {
             return
         }
         // Never operate on our own UI, and require at least one fillable field.
-        if (parsed.packageName == applicationContext.packageName ||
+        if (parsed.packageName.isNullOrBlank() ||
+            parsed.packageName == applicationContext.packageName ||
             (parsed.passwordId == null && parsed.usernameId == null)
         ) {
             callback.safeSuccess(null)
@@ -230,7 +231,8 @@ class VaultAutofillService : AutofillService() {
         }
         val identifier = parsed.identifier
         val password = parsed.passwordValue
-        if (parsed.packageName == applicationContext.packageName ||
+        if (parsed.packageName.isNullOrBlank() ||
+            parsed.packageName == applicationContext.packageName ||
             identifier == null || password.isNullOrEmpty()
         ) {
             callback.safeSuccess()
@@ -304,7 +306,7 @@ class VaultAutofillService : AutofillService() {
             this,
             nextAuthenticationRequestCode.getAndIncrement(),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
         )
         val presentation = RemoteViews(packageName, R.layout.autofill_item).apply {
             setTextViewText(R.id.autofill_title, "选择账号填充")

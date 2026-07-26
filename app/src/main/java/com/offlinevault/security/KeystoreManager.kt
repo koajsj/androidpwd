@@ -31,9 +31,12 @@ object KeystoreManager {
     private fun keyStore(): KeyStore =
         KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
+    private fun existingKey(alias: String): SecretKey? =
+        keyStore().getKey(alias, null) as? SecretKey
+
+    @Synchronized
     private fun getOrCreateKey(): SecretKey {
-        val ks = keyStore()
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        existingKey(KEY_ALIAS)?.let { return it }
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -55,9 +58,9 @@ object KeystoreManager {
         return generator.generateKey()
     }
 
+    @Synchronized
     private fun getOrCreateMaterialKey(): SecretKey {
-        val ks = keyStore()
-        (ks.getKey(MATERIAL_KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        existingKey(MATERIAL_KEY_ALIAS)?.let { return it }
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -105,8 +108,10 @@ object KeystoreManager {
 
     /** Cipher used to DECRYPT the DEK with the stored IV. Must be passed to BiometricPrompt. */
     fun decryptCipher(iv: ByteArray): Cipher {
+        val key = existingKey(KEY_ALIAS)
+            ?: throw IllegalStateException("Biometric key is unavailable")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher
     }
 
@@ -136,8 +141,10 @@ object KeystoreManager {
     fun unwrapWithDeviceKey(blob: ByteArray): ByteArray {
         val (iv, ciphertext) = splitIv(blob)
         return try {
+            val key = existingKey(MATERIAL_KEY_ALIAS)
+                ?: throw IllegalStateException("Device material key is unavailable")
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateMaterialKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
             cipher.doFinal(ciphertext)
         } finally {
             iv.fill(0)

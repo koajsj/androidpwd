@@ -24,6 +24,7 @@ object SessionManager {
 
     @Synchronized
     fun unlock(key: SecretKey) {
+        if (dek !== key) CryptoManager.destroyKey(dek)
         dek = key
         sessionGenerationCounter.incrementAndGet()
         _unlocked.value = true
@@ -31,6 +32,7 @@ object SessionManager {
 
     @Synchronized
     fun lock() {
+        CryptoManager.destroyKey(dek)
         dek = null
         sessionGenerationCounter.incrementAndGet()
         _unlocked.value = false

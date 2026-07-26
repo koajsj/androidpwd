@@ -4,7 +4,13 @@ package com.offlinevault.data.backup
 object CsvUtils {
 
     /** Parses CSV text into rows of fields, honouring quoted fields and embedded commas/newlines. */
-    fun parse(text: String): List<List<String>> {
+    fun parse(
+        text: String,
+        maxRows: Int = 100_000,
+        maxColumns: Int = 256,
+        maxFieldChars: Int = 256 * 1024
+    ): List<List<String>> {
+        require(maxRows > 0 && maxColumns > 0 && maxFieldChars > 0) { "Invalid CSV limits" }
         val rows = mutableListOf<List<String>>()
         var field = StringBuilder()
         var row = mutableListOf<String>()
@@ -17,17 +23,33 @@ object CsvUtils {
                 inQuotes -> {
                     if (c == '"') {
                         if (i + 1 < s.length && s[i + 1] == '"') {
-                            field.append('"'); i++
+                            field.append('"')
+                            require(field.length <= maxFieldChars) { "CSV field is too large" }
+                            i++
                         } else inQuotes = false
-                    } else field.append(c)
+                    } else {
+                        field.append(c)
+                        require(field.length <= maxFieldChars) { "CSV field is too large" }
+                    }
                 }
                 c == '"' -> inQuotes = true
-                c == ',' -> { row.add(field.toString()); field = StringBuilder() }
-                c == '\n' -> {
-                    row.add(field.toString()); field = StringBuilder()
-                    rows.add(row); row = mutableListOf()
+                c == ',' -> {
+                    row.add(field.toString())
+                    require(row.size <= maxColumns) { "CSV has too many columns" }
+                    field = StringBuilder()
                 }
-                else -> field.append(c)
+                c == '\n' -> {
+                    row.add(field.toString())
+                    require(row.size <= maxColumns) { "CSV has too many columns" }
+                    field = StringBuilder()
+                    rows.add(row)
+                    require(rows.size <= maxRows) { "CSV has too many rows" }
+                    row = mutableListOf()
+                }
+                else -> {
+                    field.append(c)
+                    require(field.length <= maxFieldChars) { "CSV field is too large" }
+                }
             }
             i++
         }
@@ -35,7 +57,9 @@ object CsvUtils {
         // flush trailing field/row
         if (field.isNotEmpty() || row.isNotEmpty()) {
             row.add(field.toString())
+            require(row.size <= maxColumns) { "CSV has too many columns" }
             rows.add(row)
+            require(rows.size <= maxRows) { "CSV has too many rows" }
         }
         return rows.filter { it.any { f -> f.isNotBlank() } }
     }

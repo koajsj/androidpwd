@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -79,6 +80,7 @@ fun SettingsScreen(
     onOpenHealth: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val appName = stringResource(com.offlinevault.R.string.app_name)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -462,7 +464,7 @@ fun SettingsScreen(
                         when {
                             !autofillSupported -> "当前设备不支持系统自动填充"
                             autofillServiceEnabled -> "已将本应用设为系统自动填充服务"
-                            else -> "尚未启用：需在系统设置中将「${context.getString(com.offlinevault.R.string.app_name)}」设为自动填充服务后才能使用"
+                            else -> "尚未启用：需在系统设置中将「$appName」设为自动填充服务后才能使用"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (autofillServiceEnabled || !autofillSupported)
@@ -476,7 +478,7 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "开启步骤：点击上方按钮 → 选择 ${context.getString(com.offlinevault.R.string.app_name)} → 返回本应用。若按钮打不开，请手动进入「系统设置 → 系统 → 语言和输入法 → 自动填充服务」选择 ${context.getString(com.offlinevault.R.string.app_name)}。",
+                            "开启步骤：点击上方按钮 → 选择 $appName → 返回本应用。若按钮打不开，请手动进入「系统设置 → 系统 → 语言和输入法 → 自动填充服务」选择 $appName。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1068,12 +1070,26 @@ private fun ChangeRecoveryDialog(
                     revealed = false,
                     keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "答案至少 ${com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符。" +
+                        "避免使用姓名、生日或容易猜到的公开信息。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { if (question.isNotBlank() && answer.isNotBlank()) onConfirm(question, answer) },
-                enabled = question.isNotBlank() && answer.isNotBlank()
+                onClick = {
+                    if (question.isNotBlank() &&
+                        answer.trim().length >= com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
+                    ) {
+                        onConfirm(question, answer)
+                    }
+                },
+                enabled = question.isNotBlank() &&
+                    answer.trim().length >= com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
             ) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
@@ -1093,13 +1109,24 @@ private fun BackupPasswordDialog(
         title = { Text(title) },
         text = {
             Column {
-                Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "$message 至少需要 ${com.offlinevault.data.backup.BackupManager.MIN_BACKUP_PASSWORD_LENGTH} 个字符。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(12.dp))
                 PasswordVisualField(value = password, onValueChange = { password = it }, label = "备份密码", revealed = false)
             }
         },
         confirmButton = {
-            TextButton(onClick = { if (password.isNotEmpty()) onConfirm(password) }, enabled = password.isNotEmpty()) {
+            TextButton(
+                onClick = {
+                    if (password.length >= com.offlinevault.data.backup.BackupManager.MIN_BACKUP_PASSWORD_LENGTH) {
+                        onConfirm(password)
+                    }
+                },
+                enabled = password.length >= com.offlinevault.data.backup.BackupManager.MIN_BACKUP_PASSWORD_LENGTH
+            ) {
                 Text("继续")
             }
         },

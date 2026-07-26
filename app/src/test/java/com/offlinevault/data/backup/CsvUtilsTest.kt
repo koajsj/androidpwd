@@ -26,4 +26,16 @@ class CsvUtilsTest {
             CsvUtils.parse("name,password\n\"broken,value")
         }
     }
+
+    @Test fun rejectsRowsColumnsAndFieldsBeyondConfiguredLimits() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CsvUtils.parse("a\nb\nc", maxRows = 2)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CsvUtils.parse("a,b,c", maxColumns = 2)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CsvUtils.parse("abcdef", maxFieldChars = 5)
+        }
+    }
 }

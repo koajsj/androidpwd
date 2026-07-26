@@ -196,6 +196,7 @@ class AutofillSearchActivity : FragmentActivity() {
                     error = errorState.value,
                     candidates = itemsState.value,
                     allCandidatesLoaded = allCandidatesLoaded.value,
+                    confirmMatchedWebFill = !webDomain.isNullOrBlank(),
                     onRequestAllCandidates = { loadCandidates(includeAll = true) },
                     onBack = { finish() },
                     onPick = { item ->
@@ -279,6 +280,7 @@ private fun AutofillSearchScreen(
     error: String?,
     candidates: List<AutofillCandidate>,
     allCandidatesLoaded: Boolean,
+    confirmMatchedWebFill: Boolean,
     onRequestAllCandidates: () -> Unit,
     onBack: () -> Unit,
     onPick: (DecryptedPassword) -> Unit
@@ -287,6 +289,7 @@ private fun AutofillSearchScreen(
     var showAll by remember { mutableStateOf(false) }
     var showAllConfirmation by remember { mutableStateOf(false) }
     var pendingNonMatching by remember { mutableStateOf<AutofillCandidate?>(null) }
+    var pendingWebMatch by remember { mutableStateOf<AutofillCandidate?>(null) }
     val visibleCandidates = if (showAll && allCandidatesLoaded) candidates else candidates.filter { it.matchesTarget }
     val filtered = remember(query, visibleCandidates) {
         val keyword = query.trim()
@@ -381,8 +384,11 @@ private fun AutofillSearchScreen(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        if (candidate.matchesTarget) onPick(item)
-                                        else pendingNonMatching = candidate
+                                        when {
+                                            !candidate.matchesTarget -> pendingNonMatching = candidate
+                                            confirmMatchedWebFill -> pendingWebMatch = candidate
+                                            else -> onPick(item)
+                                        }
                                     }
                                     .padding(vertical = 8.dp)
                             ) {
@@ -434,6 +440,26 @@ private fun AutofillSearchScreen(
                 }) { Text("确认填充") }
             },
             dismissButton = { TextButton(onClick = { pendingNonMatching = null }) { Text("取消") } }
+        )
+    }
+
+    pendingWebMatch?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { pendingWebMatch = null },
+            title = { Text("确认网站填充？") },
+            text = {
+                Text(
+                    "系统报告的目标是“$targetLabel”。网页域名由发起自动填充的应用提供，" +
+                        "请同时确认域名与请求应用可信，再填充“${candidate.item.title.ifBlank { "未命名项目" }}”。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingWebMatch = null
+                    onPick(candidate.item)
+                }) { Text("确认填充") }
+            },
+            dismissButton = { TextButton(onClick = { pendingWebMatch = null }) { Text("取消") } }
         )
     }
 }

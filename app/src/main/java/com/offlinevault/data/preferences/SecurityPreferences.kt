@@ -125,8 +125,12 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun updateMasterWrappedDek(masterWrappedDek: String) {
-        context.dataStore.edit { it[Keys.MASTER_WRAPPED_DEK] = masterWrappedDek }
+    suspend fun updateMasterWrappedDekIfUnchanged(expected: String, replacement: String) {
+        context.dataStore.edit {
+            if (it[Keys.MASTER_WRAPPED_DEK] == expected) {
+                it[Keys.MASTER_WRAPPED_DEK] = replacement
+            }
+        }
     }
 
     suspend fun updateRecoveryMaterial(
@@ -145,8 +149,12 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun updateRecoveryWrappedDek(recoveryWrappedDek: String) {
-        context.dataStore.edit { it[Keys.RECOVERY_WRAPPED_DEK] = recoveryWrappedDek }
+    suspend fun updateRecoveryWrappedDekIfUnchanged(expected: String, replacement: String) {
+        context.dataStore.edit {
+            if (it[Keys.RECOVERY_WRAPPED_DEK] == expected) {
+                it[Keys.RECOVERY_WRAPPED_DEK] = replacement
+            }
+        }
     }
 
     suspend fun masterSalt(): String? = context.dataStore.data.first()[Keys.MASTER_SALT]
@@ -213,12 +221,20 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun updateMnemonicWrappedDek(mnemonicWrappedDek: String) {
-        context.dataStore.edit { it[Keys.MNEMONIC_WRAPPED_DEK] = mnemonicWrappedDek }
+    suspend fun updateMnemonicWrappedDekIfUnchanged(expected: String, replacement: String) {
+        context.dataStore.edit {
+            if (it[Keys.MNEMONIC_WRAPPED_DEK] == expected) {
+                it[Keys.MNEMONIC_WRAPPED_DEK] = replacement
+            }
+        }
     }
 
-    suspend fun updateMnemonicVerifierHash(mnemonicVerifierHash: String) {
-        context.dataStore.edit { it[Keys.MNEMONIC_VERIFIER_HASH] = mnemonicVerifierHash }
+    suspend fun updateMnemonicVerifierHashIfUnchanged(expected: String, replacement: String) {
+        context.dataStore.edit {
+            if (it[Keys.MNEMONIC_VERIFIER_HASH] == expected) {
+                it[Keys.MNEMONIC_VERIFIER_HASH] = replacement
+            }
+        }
     }
 
     suspend fun clearMnemonicMaterial() {
@@ -323,7 +339,11 @@ class SecurityPreferences(private val context: Context) {
 
     suspend fun recordFailure() {
         context.dataStore.edit {
-            it[Keys.FAILED_ATTEMPTS] = (it[Keys.FAILED_ATTEMPTS] ?: 0) + 1
+            // Cap the persisted counter so repeated failures can never wrap Int back to a value
+            // below the throttling threshold.
+            it[Keys.FAILED_ATTEMPTS] = (it[Keys.FAILED_ATTEMPTS] ?: 0)
+                .coerceAtLeast(0)
+                .coerceAtMost(999) + 1
             it[Keys.LAST_FAILED_AT] = System.currentTimeMillis()
         }
     }

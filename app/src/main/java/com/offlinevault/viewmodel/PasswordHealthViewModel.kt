@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordHealthCandidate
 import com.offlinevault.data.repository.PasswordRepository
-import com.offlinevault.security.PasswordStrengthChecker
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +46,17 @@ class PasswordHealthViewModel(
         const val STALE_DAYS = 180
     }
 
+    init {
+        viewModelScope.launch {
+            SessionManager.unlocked.collect { unlocked ->
+                if (!unlocked) {
+                    loadJob?.cancel()
+                    _state.value = UiState(loading = false)
+                }
+            }
+        }
+    }
+
     fun load() {
         if (loadJob?.isActive == true) return
         _state.value = UiState(loading = true)
@@ -63,14 +74,14 @@ class PasswordHealthViewModel(
 
     private suspend fun buildReport(): HealthReport {
         val all = passwordRepository.healthCandidatesSkippingCorrupt()
-        val withPassword = all.filter { it.password.isNotBlank() }
+        val withPassword = all.filter { it.passwordFingerprint != null }
 
         val weak = withPassword
-            .filter { PasswordStrengthChecker.evaluate(it.password).score < WEAK_SCORE_BELOW }
+            .filter { it.strengthScore < WEAK_SCORE_BELOW }
             .map { it.toEntry() }
 
         val reused = withPassword
-            .groupBy { it.password }
+            .groupBy { it.passwordFingerprint }
             .filterValues { it.size > 1 }
             .values
             .flatten()

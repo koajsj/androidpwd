@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.PasswordHistoryItem
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -66,6 +67,19 @@ class PasswordDetailViewModel(
     private val _history = MutableStateFlow<List<PasswordHistoryItem>>(emptyList())
     val history: StateFlow<List<PasswordHistoryItem>> = _history.asStateFlow()
     private var historyJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            SessionManager.unlocked.collect { unlocked ->
+                if (!unlocked) {
+                    historyJob?.cancel()
+                    _history.value = emptyList()
+                    id.value = null
+                    _error.value = null
+                }
+            }
+        }
+    }
 
     fun load(passwordId: String) {
         if (id.value != passwordId) {

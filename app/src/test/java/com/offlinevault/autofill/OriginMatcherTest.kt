@@ -1,6 +1,7 @@
 package com.offlinevault.autofill
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -47,5 +48,12 @@ class OriginMatcherTest {
         val appId = OriginMatcher.appIdentifier("com.example.app")
         assertFalse(OriginMatcher.matches(appId, "com.example.app"))
         assertFalse(OriginMatcher.sameTarget("https://com.example.app", appId))
+    }
+
+    @Test fun webTargetLabelAlsoNamesRequestingPackage() {
+        assertEquals(
+            "example.com（由 com.example.browser 请求）",
+            OriginMatcher.targetLabel("example.com", "com.example.browser")
+        )
     }
 }

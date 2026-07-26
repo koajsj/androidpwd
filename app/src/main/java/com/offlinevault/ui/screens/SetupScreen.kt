@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.offlinevault.security.CredentialType
+import com.offlinevault.security.KeyManager
 import com.offlinevault.security.MnemonicManager
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.ui.components.IconBadge
@@ -75,7 +76,8 @@ fun SetupScreen(
 
     val strength = PasswordStrengthChecker.evaluate(master)
     val canSubmit = credType.isValid(master) && confirm.isNotEmpty() &&
-        question.isNotBlank() && answer.isNotBlank()
+        question.isNotBlank() &&
+        answer.trim().length >= KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
 
     fun setType(type: CredentialType) {
         credType = type
@@ -155,7 +157,7 @@ fun SetupScreen(
                 Text("解锁方式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CredentialType.entries.forEach { type ->
+                    CredentialType.setupOptions.forEach { type ->
                         SegmentOption(
                             label = when (type) {
                                 CredentialType.PIN4 -> "4位数字密码"
@@ -221,6 +223,12 @@ fun SetupScreen(
                     revealed = false,
                     keyboardType = KeyboardType.Password
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "答案至少 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符，避免使用姓名、生日等公开信息。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -257,6 +265,8 @@ fun SetupScreen(
                         if (credType.isNumeric) "请输入${credType.minLength}位数字密码"
                         else "密码至少需要${credType.minLength}个字符"
                     master != confirm -> "两次输入的${credType.noun}不一致"
+                    answer.trim().length < KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH ->
+                        "安全问题答案至少需要 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符"
                     else -> null
                 }
                 if (localError == null) pendingMnemonicWords = mnemonicManager.generateWords()

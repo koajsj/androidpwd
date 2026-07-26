@@ -3,12 +3,14 @@ package com.offlinevault.data.repository
 import com.offlinevault.data.dao.VaultDao
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.security.EncryptedField
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 
 class VaultRepository(private val vaultDao: VaultDao) {
 
@@ -20,7 +22,9 @@ class VaultRepository(private val vaultDao: VaultDao) {
     // main thread so a large multi-vault import does not hitch navigation or settings rendering.
     fun allVaults(): Flow<List<VaultEntity>> =
         vaultDao.getAllVaults()
-            .map { rows -> rows.map(::decrypt) }
+            .combine(SessionManager.unlocked) { rows, unlocked ->
+                if (unlocked) rows.map(::decrypt) else emptyList()
+            }
             .flowOn(Dispatchers.Default)
 
     suspend fun getById(id: String): VaultEntity? = vaultDao.getById(id)?.let(::decrypt)
@@ -28,7 +32,12 @@ class VaultRepository(private val vaultDao: VaultDao) {
     suspend fun allOnce(): List<VaultEntity> = vaultDao.getAllVaultsOnce().map(::decrypt)
 
     suspend fun create(name: String, icon: String): VaultEntity {
-        val vault = VaultEntity(name = EncryptedField.encrypt(requireVaultName(name)), icon = icon)
+        val id = UUID.randomUUID().toString()
+        val vault = VaultEntity(
+            id = id,
+            name = EncryptedField.encrypt(requireVaultName(name), nameContext(id)),
+            icon = icon
+        )
         vaultDao.insert(vault)
         return decrypt(vault)
     }
@@ -37,7 +46,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
     suspend fun rename(id: String, name: String): VaultEntity? {
         val existing = vaultDao.getById(id) ?: return null
         val updated = existing.copy(
-            name = EncryptedField.encrypt(requireVaultName(name)),
+            name = EncryptedField.encrypt(requireVaultName(name), nameContext(id)),
             updatedAt = System.currentTimeMillis()
         )
         vaultDao.update(updated)
@@ -67,26 +76,32 @@ class VaultRepository(private val vaultDao: VaultDao) {
     /** Ensures there is always at least one vault to put credentials into. */
     suspend fun ensureDefault(): VaultEntity = ensureDefaultMutex.withLock {
         vaultDao.firstVault()?.let { return@withLock decrypt(it) }
-        val vault = VaultEntity(name = EncryptedField.encrypt("个人"), icon = "person")
+        val id = UUID.randomUUID().toString()
+        val vault = VaultEntity(
+            id = id,
+            name = EncryptedField.encrypt("个人", nameContext(id)),
+            icon = "person"
+        )
         vaultDao.insert(vault)
         decrypt(vault)
     }
 
     suspend fun insertImported(vault: VaultEntity) {
-        vaultDao.insert(vault.copy(name = EncryptedField.encrypt(vault.name)))
+        vaultDao.insert(vault.copy(name = EncryptedField.encrypt(vault.name, nameContext(vault.id))))
     }
 
     suspend fun migrateLegacyMetadata() {
         vaultDao.getAllVaultsOnce().forEach { row ->
-            if (!EncryptedField.isEncrypted(row.name)) {
-                vaultDao.update(row.copy(name = EncryptedField.encrypt(row.name)))
+            if (!EncryptedField.isContextBound(row.name)) {
+                val migratedName = EncryptedField.migrate(row.name, nameContext(row.id))
+                vaultDao.migrateNameIfUnchanged(row.id, row.name, migratedName)
             }
         }
     }
 
     private fun decrypt(vault: VaultEntity): VaultEntity =
         runCatching {
-            vault.copy(name = EncryptedField.decrypt(vault.name))
+            vault.copy(name = EncryptedField.decrypt(vault.name, nameContext(vault.id)))
         }.getOrElse {
             // Keep the vault reachable even if its encrypted display name is damaged; credentials
             // inside it remain independently encrypted and can still be listed/imported/exported.
@@ -103,6 +118,8 @@ class VaultRepository(private val vaultDao: VaultDao) {
     companion object {
         const val MAX_NAME_LENGTH = 40
     }
+
+    private fun nameContext(id: String): String = "vault:$id:name"
 }
 
 sealed interface VaultDeleteResult {

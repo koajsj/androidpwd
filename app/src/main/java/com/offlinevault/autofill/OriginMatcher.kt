@@ -38,7 +38,11 @@ object OriginMatcher {
     }
 
     fun targetLabel(webDomain: String?, packageName: String?): String = when {
-        !webDomain.isNullOrBlank() -> normalizeHost(webDomain) ?: "当前网站"
+        !webDomain.isNullOrBlank() -> {
+            val host = normalizeHost(webDomain) ?: "当前网站"
+            val requester = packageName?.trim()?.takeIf { it.isNotEmpty() }
+            if (requester != null) "$host（由 $requester 请求）" else host
+        }
         !packageName.isNullOrBlank() -> packageName.trim()
         else -> "当前目标"
     }

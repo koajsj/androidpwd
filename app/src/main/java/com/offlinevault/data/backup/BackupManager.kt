@@ -20,17 +20,30 @@ class BackupManager(
     private val vaultRepository: VaultRepository,
     private val passwordRepository: PasswordRepository
 ) {
-    private companion object {
-        const val MAX_IMPORT_VAULTS = 1_000
-        const val MAX_IMPORT_ITEMS = 50_000
-        const val MAX_CSV_ROWS = MAX_IMPORT_ITEMS + 1
-        const val PREVIEW_SAMPLE_LIMIT = 5
+    companion object {
+        const val MIN_BACKUP_PASSWORD_LENGTH = 8
+        private const val MAX_IMPORT_VAULTS = 1_000
+        private const val MAX_IMPORT_ITEMS = 50_000
+        private const val MAX_CSV_ROWS = MAX_IMPORT_ITEMS + 1
+        private const val MAX_CSV_COLUMNS = 128
+        private const val MAX_VAULT_ID_CHARS = 200
+        private const val MAX_VAULT_NAME_CHARS = 40
+        private const val MAX_ICON_CHARS = 64
+        private const val MAX_TITLE_CHARS = 512
+        private const val MAX_USERNAME_CHARS = 1_024
+        private const val MAX_PASSWORD_CHARS = 32 * 1_024
+        private const val MAX_URL_CHARS = 4 * 1_024
+        private const val MAX_NOTE_CHARS = 128 * 1_024
+        private const val MAX_TAGS = 100
+        private const val MAX_TAG_CHARS = 256
+        private const val MAX_CSV_FIELD_CHARS = MAX_NOTE_CHARS
+        private const val PREVIEW_SAMPLE_LIMIT = 5
         // Keep encryption and Room's transaction footprint bounded on low-memory devices. A
         // failed batch is retried item by item, so one malformed external record never discards
         // the rest of a large import.
-        const val IMPORT_WRITE_BATCH_SIZE = 200
-        const val NEW_IMPORT_VAULT_PLACEHOLDER = "__new_vault__"
-        const val PENDING_IMPORT_ID_PREFIX = "__pending_import__"
+        private const val IMPORT_WRITE_BATCH_SIZE = 200
+        private const val NEW_IMPORT_VAULT_PLACEHOLDER = "__new_vault__"
+        private const val PENDING_IMPORT_ID_PREFIX = "__pending_import__"
     }
 
     private data class ImportCandidate(
@@ -75,6 +88,9 @@ class BackupManager(
     // ---- JSON export (encrypted) ------------------------------------------
 
     suspend fun buildEncryptedJsonBackup(backupPassword: String): String {
+        require(backupPassword.length >= MIN_BACKUP_PASSWORD_LENGTH) {
+            "备份密码至少需要 $MIN_BACKUP_PASSWORD_LENGTH 个字符"
+        }
         val vaults = vaultRepository.allOnce().map { BackupVault(it.id, it.name, it.icon) }
         val items = passwordRepository.allDecrypted().map {
             BackupItem(it.vaultId, it.title, it.username, it.password, it.url, it.tags, it.note, it.favorite)
@@ -91,6 +107,7 @@ class BackupManager(
             CryptoManager.encrypt(key, plainBytes)
         } finally {
             plainBytes.fill(0)
+            CryptoManager.destroyKey(key)
         }
 
         return try {
@@ -245,6 +262,15 @@ class BackupManager(
         var invalidItems = 0
         val candidates = mutableListOf<ImportCandidate>()
         for (item in data.items) {
+            val validItem = try {
+                isValidImportItem(item)
+            } catch (_: Exception) {
+                false
+            }
+            if (!validItem) {
+                invalidItems++
+                continue
+            }
             val targetVaultId = when {
                 item.vaultId in effectiveVaultIds -> item.vaultId
                 fallbackVaultId != null -> {
@@ -280,7 +306,12 @@ class BackupManager(
     }
 
     private suspend fun prepareCsvImport(content: String, targetVaultId: String): PreparedImport {
-        val rows = CsvUtils.parse(content)
+        val rows = CsvUtils.parse(
+            text = content,
+            maxRows = MAX_CSV_ROWS,
+            maxColumns = MAX_CSV_COLUMNS,
+            maxFieldChars = MAX_CSV_FIELD_CHARS
+        )
         if (rows.isEmpty()) throw IllegalArgumentException("CSV 文件为空")
         if (rows.size > MAX_CSV_ROWS) throw IllegalArgumentException("CSV 中的项目数量过多")
 
@@ -309,7 +340,9 @@ class BackupManager(
                 val url = at(urlIdx)
                 val note = at(noteIdx)
                 val tags = at(tagsIdx).split("|", ",").map { it.trim() }.filter { it.isNotEmpty() }
-                if (password.isEmpty() && username.isEmpty()) {
+                if (password.isEmpty() && username.isEmpty() ||
+                    !isValidCandidateFields(title, username, password, url, tags, note)
+                ) {
                     invalidItems++
                     continue
                 }
@@ -544,7 +577,11 @@ class BackupManager(
                     )
                     val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
                     val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
-                    val plainBytes = CryptoManager.decrypt(key, encryptedBytes)
+                    val plainBytes = try {
+                        CryptoManager.decrypt(key, encryptedBytes)
+                    } finally {
+                        CryptoManager.destroyKey(key)
+                    }
                     if (wrapper.integrityHash.isNotBlank() &&
                         !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
                     ) {
@@ -573,8 +610,13 @@ class BackupManager(
             data.vaults.size > MAX_IMPORT_VAULTS -> "备份中的密码库数量过多"
             data.items.size > MAX_IMPORT_ITEMS -> "备份中的项目数量过多"
             data.vaults.map { it.id }.distinct().size != data.vaults.size -> "备份中存在重复的密码库标识"
-            data.vaults.any { it.id.isBlank() || it.name.isBlank() } -> "备份中包含无效的密码库"
-            data.items.any { it.vaultId.isBlank() } -> "备份中包含无效的项目"
+            data.vaults.any {
+                it.id.isBlank() ||
+                    it.id.length > MAX_VAULT_ID_CHARS ||
+                    it.name.isBlank() ||
+                    it.name.length > MAX_VAULT_NAME_CHARS ||
+                    it.icon.length > MAX_ICON_CHARS
+            } -> "备份中包含无效的密码库"
             else -> null
         }
     } catch (_: Exception) {
@@ -713,4 +755,36 @@ class BackupManager(
             .orEmpty()
         return (titleTokens + hostTokens).toSet()
     }
+
+    private fun isValidImportItem(item: BackupItem): Boolean = try {
+        item.vaultId.isNotBlank() &&
+            item.vaultId.length <= MAX_VAULT_ID_CHARS &&
+            isValidCandidateFields(
+                item.title,
+                item.username,
+                item.password,
+                item.url,
+                item.tags,
+                item.note
+            )
+    } catch (_: Exception) {
+        // Gson can materialise null into Kotlin non-null properties from hostile JSON.
+        false
+    }
+
+    private fun isValidCandidateFields(
+        title: String,
+        username: String,
+        password: String,
+        url: String,
+        tags: List<String>,
+        note: String
+    ): Boolean =
+        title.length <= MAX_TITLE_CHARS &&
+            username.length <= MAX_USERNAME_CHARS &&
+            password.length <= MAX_PASSWORD_CHARS &&
+            url.length <= MAX_URL_CHARS &&
+            note.length <= MAX_NOTE_CHARS &&
+            tags.size <= MAX_TAGS &&
+            tags.all { it.length <= MAX_TAG_CHARS }
 }

@@ -10,6 +10,7 @@ import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultDataCorruptionException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
@@ -43,7 +44,8 @@ data class PasswordHealthCandidate(
     val id: String,
     val title: String,
     val username: String,
-    val password: String,
+    val strengthScore: Int,
+    val passwordFingerprint: String?,
     val updatedAt: Long
 )
 
@@ -60,7 +62,10 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     fun passwordsByVault(vaultId: String): Flow<List<PasswordEntity>> =
         // List views skip any individually corrupted row so one bad entry can't blank the whole
         // screen; the detail view still surfaces a per-item corruption error.
-        passwordDao.getPasswordsByVaultId(vaultId).map { rows -> rows.mapNotNull(::decryptMetadataOrNull) }
+        passwordDao.getPasswordsByVaultId(vaultId)
+            .combine(SessionManager.unlocked) { rows, unlocked ->
+                if (unlocked) rows.mapNotNull(::decryptMetadataOrNull) else emptyList()
+            }
 
     fun search(vaultId: String, query: String): Flow<List<PasswordEntity>> =
         passwordsByVault(vaultId).map { rows ->
@@ -78,15 +83,18 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         }
 
     fun observe(id: String): Flow<PasswordEntity?> =
-        passwordDao.observeById(id).map { it?.let(::decryptMetadata) }
+        passwordDao.observeById(id)
+            .combine(SessionManager.unlocked) { row, unlocked ->
+                if (unlocked) row?.let(::decryptMetadata) else null
+            }
 
     /** Decrypts the password + note of an entity using the active session key. */
     fun decrypt(entity: PasswordEntity): DecryptedPassword {
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         val metadata = decryptMetadata(entity)
-        val password = decryptRequired(key, entity.encryptedPassword, "password", entity.id)
+        val password = decryptRequired(entity.encryptedPassword, "password", entity.id)
         val note = if (entity.encryptedNote.isBlank()) "" else
-            decryptRequired(key, entity.encryptedNote, "note", entity.id)
+            decryptRequired(entity.encryptedNote, "note", entity.id)
         return DecryptedPassword(
             id = entity.id,
             vaultId = entity.vaultId,
@@ -118,20 +126,25 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         note: String,
         favorite: Boolean? = null
     ): String {
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         val now = System.currentTimeMillis()
         val existing = id?.let { passwordDao.getById(it) }
-        if (existing != null) recordHistoryIfChanged(existing, password, key)
+        if (existing != null) recordHistoryIfChanged(existing, password)
+        val entityId = existing?.id ?: UUID.randomUUID().toString()
 
         val entity = PasswordEntity(
-            id = existing?.id ?: UUID.randomUUID().toString(),
+            id = entityId,
             vaultId = vaultId,
-            title = EncryptedField.encrypt(title.trim()),
-            username = EncryptedField.encrypt(username.trim()),
-            encryptedPassword = CryptoManager.encryptString(key, password),
-            url = EncryptedField.encrypt(url.trim()),
-            tags = EncryptedField.encrypt(tags.joinToString(",") { it.trim() }.trim()),
-            encryptedNote = if (note.isBlank()) "" else CryptoManager.encryptString(key, note),
+            title = EncryptedField.encrypt(title.trim(), fieldContext(entityId, "title")),
+            username = EncryptedField.encrypt(username.trim(), fieldContext(entityId, "username")),
+            encryptedPassword = EncryptedField.encryptSecret(password, fieldContext(entityId, "password")),
+            url = EncryptedField.encrypt(url.trim(), fieldContext(entityId, "url")),
+            tags = EncryptedField.encrypt(
+                tags.joinToString(",") { it.trim() }.trim(),
+                fieldContext(entityId, "tags")
+            ),
+            encryptedNote = if (note.isBlank()) "" else
+                EncryptedField.encryptSecret(note, fieldContext(entityId, "note")),
             strengthScore = PasswordStrengthChecker.evaluate(password).score,
             createdAt = existing?.createdAt ?: now,
             updatedAt = now,
@@ -164,7 +177,10 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Trashed credentials, newest deletion first. Corrupted rows are skipped, never crash the list. */
     fun trashed(): Flow<List<PasswordEntity>> =
-        passwordDao.observeTrashed().map { rows -> rows.mapNotNull(::decryptMetadataOrNull) }
+        passwordDao.observeTrashed()
+            .combine(SessionManager.unlocked) { rows, unlocked ->
+                if (unlocked) rows.mapNotNull(::decryptMetadataOrNull) else emptyList()
+            }
 
     suspend fun restore(id: String) {
         passwordDao.restore(id)
@@ -192,9 +208,14 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Decrypts the stored previous passwords for a credential, newest first. Corrupted rows skipped. */
     suspend fun history(passwordId: String): List<PasswordHistoryItem> {
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         return passwordDao.historyForOnce(passwordId).mapNotNull { row ->
-            val pw = skipCorrupt { CryptoManager.decryptString(key, row.encryptedPassword) }
+            val pw = skipCorrupt {
+                EncryptedField.decryptSecret(
+                    row.encryptedPassword,
+                    fieldContext(row.passwordId, "password")
+                )
+            }
                 ?: return@mapNotNull null
             PasswordHistoryItem(row.id, pw, row.changedAt)
         }
@@ -204,8 +225,13 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
      * Records the soon-to-be-overwritten password into history, but only when it actually changed.
      * Reuses the existing ciphertext (same session key) so no re-encryption is needed.
      */
-    private suspend fun recordHistoryIfChanged(existing: PasswordEntity, newPassword: String, key: javax.crypto.SecretKey) {
-        val old = skipCorrupt { CryptoManager.decryptString(key, existing.encryptedPassword) }
+    private suspend fun recordHistoryIfChanged(existing: PasswordEntity, newPassword: String) {
+        val old = skipCorrupt {
+            EncryptedField.decryptSecret(
+                existing.encryptedPassword,
+                fieldContext(existing.id, "password")
+            )
+        }
         if (old.isNullOrEmpty() || old == newPassword) return
         passwordDao.insertHistory(
             com.offlinevault.data.model.PasswordHistoryEntity(
@@ -222,20 +248,23 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
      * instead of creating a duplicate. [identifier] is a domain or an `androidapp://<package>` id.
      */
     suspend fun upsertFromAutofill(vaultId: String, identifier: String, username: String, password: String) {
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         val now = System.currentTimeMillis()
         val existing = passwordDao.getAllOnce().firstOrNull { entity ->
             skipCorrupt {
-                val url = EncryptedField.decrypt(entity.url)
-                val user = EncryptedField.decrypt(entity.username)
+                val url = EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url"))
+                val user = EncryptedField.decrypt(entity.username, fieldContext(entity.id, "username"))
                 OriginMatcher.sameTarget(url, identifier) && user.equals(username.trim(), ignoreCase = true)
             } ?: false
         }
         if (existing != null) {
-            recordHistoryIfChanged(existing, password, key)
+            recordHistoryIfChanged(existing, password)
             passwordDao.update(
                 existing.copy(
-                    encryptedPassword = CryptoManager.encryptString(key, password),
+                    encryptedPassword = EncryptedField.encryptSecret(
+                        password,
+                        fieldContext(existing.id, "password")
+                    ),
                     strengthScore = PasswordStrengthChecker.evaluate(password).score,
                     updatedAt = now
                 )
@@ -273,24 +302,32 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         }
 
     /**
-     * Health checks never need notes, tags or URLs. Avoid decrypting and retaining those fields
-     * when auditing a large vault; the returned password strings are reduced to report entries by
-     * the caller before they reach UI state.
+     * Health checks never need notes, tags or URLs. Passwords are reduced immediately to a strength
+     * score and a per-run randomised fingerprint, so plaintext passwords never enter ViewModel state.
      */
     suspend fun healthCandidatesSkippingCorrupt(): List<PasswordHealthCandidate> {
-        val key = SessionManager.requireKey()
-        return passwordDao.getAllOnce().mapNotNull { entity ->
-            coroutineContext.ensureActive()
-            skipCorrupt {
-                val metadata = decryptMetadata(entity)
-                PasswordHealthCandidate(
-                    id = entity.id,
-                    title = metadata.title,
-                    username = metadata.username,
-                    password = decryptRequired(key, entity.encryptedPassword, "password", entity.id),
-                    updatedAt = entity.updatedAt
-                )
+        SessionManager.requireKey()
+        val runPepper = CryptoManager.randomBytes(32)
+        return try {
+            passwordDao.getAllOnce().mapNotNull { entity ->
+                coroutineContext.ensureActive()
+                skipCorrupt {
+                    val metadata = decryptMetadata(entity)
+                    val password = decryptRequired(entity.encryptedPassword, "password", entity.id)
+                    PasswordHealthCandidate(
+                        id = entity.id,
+                        title = metadata.title,
+                        username = metadata.username,
+                        strengthScore = PasswordStrengthChecker.evaluate(password).score,
+                        passwordFingerprint = password
+                            .takeIf { it.isNotBlank() }
+                            ?.let { fingerprintForRun(it, runPepper) },
+                        updatedAt = entity.updatedAt
+                    )
+                }
             }
+        } finally {
+            runPepper.fill(0)
         }
     }
 
@@ -314,7 +351,9 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     suspend fun decryptedMatching(urlMatches: (String) -> Boolean): List<DecryptedPassword> {
         SessionManager.requireKey() // fail fast when locked
         return passwordDao.getAllOnce().mapNotNull { entity ->
-            val url = skipCorrupt { EncryptedField.decrypt(entity.url) } ?: return@mapNotNull null
+            val url = skipCorrupt {
+                EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url"))
+            } ?: return@mapNotNull null
             if (!urlMatches(url)) return@mapNotNull null
             skipCorrupt { decrypt(entity) }
         }
@@ -322,20 +361,28 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Bulk insert used by import. Each [DecryptedPassword] is encrypted before storage. */
     suspend fun importDecrypted(vaultId: String, items: List<DecryptedPassword>): Int {
-        val key = SessionManager.requireKey()
+        SessionManager.requireKey()
         val now = System.currentTimeMillis()
         val entities = items.map { item ->
             coroutineContext.ensureActive()
             SessionManager.requireKey()
+            val entityId = UUID.randomUUID().toString()
             PasswordEntity(
-                id = UUID.randomUUID().toString(),
+                id = entityId,
                 vaultId = vaultId,
-                title = EncryptedField.encrypt(item.title),
-                username = EncryptedField.encrypt(item.username),
-                encryptedPassword = CryptoManager.encryptString(key, item.password),
-                url = EncryptedField.encrypt(item.url),
-                tags = EncryptedField.encrypt(item.tags.joinToString(",")),
-                encryptedNote = if (item.note.isBlank()) "" else CryptoManager.encryptString(key, item.note),
+                title = EncryptedField.encrypt(item.title, fieldContext(entityId, "title")),
+                username = EncryptedField.encrypt(item.username, fieldContext(entityId, "username")),
+                encryptedPassword = EncryptedField.encryptSecret(
+                    item.password,
+                    fieldContext(entityId, "password")
+                ),
+                url = EncryptedField.encrypt(item.url, fieldContext(entityId, "url")),
+                tags = EncryptedField.encrypt(
+                    item.tags.joinToString(","),
+                    fieldContext(entityId, "tags")
+                ),
+                encryptedNote = if (item.note.isBlank()) "" else
+                    EncryptedField.encryptSecret(item.note, fieldContext(entityId, "note")),
                 strengthScore = PasswordStrengthChecker.evaluate(item.password).score,
                 createdAt = now,
                 updatedAt = now,
@@ -346,25 +393,66 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         return entities.size
     }
 
-    suspend fun migrateLegacyMetadata() {
+    suspend fun migrateLegacyEncryption() {
         passwordDao.getAllIncludingTrashedOnce().forEach { row ->
-            // Older releases could leave a mixture of legacy plaintext and encrypted metadata.
-            // Encrypt fields independently: re-encrypting the already protected fields would make
-            // their display value the ciphertext after the next unlock.
-            val migrated = row.copy(
-                title = encryptLegacyMetadata(row.title),
-                username = encryptLegacyMetadata(row.username),
-                url = encryptLegacyMetadata(row.url),
-                tags = encryptLegacyMetadata(row.tags)
-            )
-            if (migrated != row) {
-                passwordDao.update(migrated)
+            try {
+                val migrated = row.copy(
+                    title = EncryptedField.migrate(row.title, fieldContext(row.id, "title")),
+                    username = EncryptedField.migrate(row.username, fieldContext(row.id, "username")),
+                    encryptedPassword = EncryptedField.migrateSecret(
+                        row.encryptedPassword,
+                        fieldContext(row.id, "password")
+                    ),
+                    url = EncryptedField.migrate(row.url, fieldContext(row.id, "url")),
+                    tags = EncryptedField.migrate(row.tags, fieldContext(row.id, "tags")),
+                    encryptedNote = if (row.encryptedNote.isBlank()) "" else
+                        EncryptedField.migrateSecret(row.encryptedNote, fieldContext(row.id, "note"))
+                )
+                if (migrated != row) {
+                    passwordDao.migrateEncryptionIfUnchanged(
+                        id = row.id,
+                        oldTitle = row.title,
+                        oldUsername = row.username,
+                        oldPassword = row.encryptedPassword,
+                        oldUrl = row.url,
+                        oldTags = row.tags,
+                        oldNote = row.encryptedNote,
+                        newTitle = migrated.title,
+                        newUsername = migrated.username,
+                        newPassword = migrated.encryptedPassword,
+                        newUrl = migrated.url,
+                        newTags = migrated.tags,
+                        newNote = migrated.encryptedNote
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Keep a damaged row isolated. The integrity sweep reports it after migration.
+            }
+        }
+        passwordDao.allHistoryOnce().forEach { row ->
+            try {
+                val migrated = row.copy(
+                    encryptedPassword = EncryptedField.migrateSecret(
+                        row.encryptedPassword,
+                        fieldContext(row.passwordId, "password")
+                    )
+                )
+                if (migrated != row) {
+                    passwordDao.migrateHistoryEncryptionIfUnchanged(
+                        id = row.id,
+                        oldEncryptedPassword = row.encryptedPassword,
+                        newEncryptedPassword = migrated.encryptedPassword
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // The integrity sweep reports and the UI skips a damaged history entry.
             }
         }
     }
-
-    private fun encryptLegacyMetadata(value: String): String =
-        if (EncryptedField.isEncrypted(value)) value else EncryptedField.encrypt(value)
 
     /** Resilient variant used by list flows: returns null instead of throwing on a corrupted row. */
     private fun decryptMetadataOrNull(entity: PasswordEntity): PasswordEntity? =
@@ -385,23 +473,41 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     private fun decryptMetadata(entity: PasswordEntity): PasswordEntity = try {
         entity.copy(
-            title = EncryptedField.decrypt(entity.title),
-            username = EncryptedField.decrypt(entity.username),
-            url = EncryptedField.decrypt(entity.url),
-            tags = EncryptedField.decrypt(entity.tags)
+            title = EncryptedField.decrypt(entity.title, fieldContext(entity.id, "title")),
+            username = EncryptedField.decrypt(entity.username, fieldContext(entity.id, "username")),
+            url = EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url")),
+            tags = EncryptedField.decrypt(entity.tags, fieldContext(entity.id, "tags"))
         )
     } catch (e: Exception) {
         throw VaultDataCorruptionException("Credential metadata is corrupted: ${entity.id}", e)
     }
 
     private fun decryptRequired(
-        key: javax.crypto.SecretKey,
         value: String,
         field: String,
         id: String
     ): String = try {
-        CryptoManager.decryptString(key, value)
+        EncryptedField.decryptSecret(value, fieldContext(id, field))
     } catch (e: Exception) {
         throw VaultDataCorruptionException("Credential $field is corrupted: $id", e)
+    }
+
+    private fun fieldContext(id: String, field: String): String = "credential:$id:$field"
+
+    /**
+     * Per-run salted fingerprint supports reuse grouping without retaining plaintext passwords or
+     * a stable offline-verification hash in ViewModel state.
+     */
+    private fun fingerprintForRun(password: String, runPepper: ByteArray): String {
+        val passwordBytes = password.toByteArray(Charsets.UTF_8)
+        val material = ByteArray(runPepper.size + passwordBytes.size)
+        return try {
+            runPepper.copyInto(material)
+            passwordBytes.copyInto(material, destinationOffset = runPepper.size)
+            CryptoManager.sha256Hex(material)
+        } finally {
+            passwordBytes.fill(0)
+            material.fill(0)
+        }
     }
 }

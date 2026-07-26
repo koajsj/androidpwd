@@ -133,6 +133,10 @@ class SettingsViewModel(
     }
 
     fun changeRecovery(question: String, answer: String, onResult: (Boolean, String?) -> Unit) {
+        if (answer.trim().length < KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH) {
+            onResult(false, "安全问题答案至少需要 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符")
+            return
+        }
         if (changeRecoveryJob?.isActive == true) return
         changeRecoveryJob = viewModelScope.launch {
             try {
