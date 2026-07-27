@@ -27,6 +27,22 @@ class CsvUtilsTest {
         }
     }
 
+    @Test fun rejectsQuotesInUnquotedFieldsAndCharactersAfterClosingQuote() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CsvUtils.parse("name,password\nbad\"value,secret")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CsvUtils.parse("name,password\n\"closed\"junk,secret")
+        }
+    }
+
+    @Test fun parsesEscapedQuotesEmptyFieldsAndCrLf() {
+        val rows = CsvUtils.parse("name,note,empty\r\n\"示\"\"例\",\"a\r\nb\",\r\n")
+
+        assertEquals(listOf("name", "note", "empty"), rows[0])
+        assertEquals(listOf("示\"例", "a\nb", ""), rows[1])
+    }
+
     @Test fun rejectsRowsColumnsAndFieldsBeyondConfiguredLimits() {
         assertThrows(IllegalArgumentException::class.java) {
             CsvUtils.parse("a\nb\nc", maxRows = 2)

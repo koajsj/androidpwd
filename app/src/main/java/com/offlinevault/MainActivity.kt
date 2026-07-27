@@ -62,12 +62,15 @@ import com.offlinevault.viewmodel.SettingsViewModel
 import com.offlinevault.viewmodel.TrashViewModel
 import com.offlinevault.viewmodel.ViewModelFactory
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
 
     private val prefs by lazy { (application as OfflineVaultApp).container.securityPreferences }
     private var backgroundedAt: Long = 0L
+    private var autoLockJob: Job? = null
 
     @Volatile
     private var lockOnScreenOff = false
@@ -181,12 +184,20 @@ class MainActivity : FragmentActivity() {
         // Record every transition, including system UI. A picker must not bypass the configured
         // timeout simply because it temporarily fronted the activity.
         backgroundedAt = System.currentTimeMillis()
-        if (LockGuard.suppressNextBackground) return
-        if (autoLockSeconds == 0) SessionManager.lock()
+        // Only the locked-screen biometric prompt may defer the timer while its CryptoObject is
+        // in flight. File pickers/settings must still clear the in-memory DEK when the configured
+        // timeout expires, even if the user has not returned to this activity yet.
+        if (LockGuard.suppressNextBackground && LockGuard.suppressAutoLockOnReturn) return
+        scheduleAutoLock()
     }
 
     override fun onStart() {
         super.onStart()
+        autoLockJob?.cancel()
+        autoLockJob = null
+        // Android may block clipboard reads while the app is backgrounded. Retry any expired
+        // app-owned sensitive clip now that the activity is visible again.
+        ClipboardHelper.restorePendingSensitiveClear(applicationContext)
         if (LockGuard.suppressNextBackground) {
             val deferForBiometricPrompt = LockGuard.suppressAutoLockOnReturn
             LockGuard.suppressNextBackground = false
@@ -207,6 +218,19 @@ class MainActivity : FragmentActivity() {
         } else {
             val elapsed = System.currentTimeMillis() - backgroundedAt
             if (elapsed >= seconds * 1000L) SessionManager.lock()
+        }
+    }
+
+    private fun scheduleAutoLock() {
+        autoLockJob?.cancel()
+        val seconds = autoLockSeconds
+        if (seconds <= 0) {
+            SessionManager.lock()
+            return
+        }
+        autoLockJob = lifecycleScope.launch {
+            delay(seconds * 1000L)
+            SessionManager.lock()
         }
     }
 }

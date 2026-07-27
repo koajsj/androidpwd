@@ -252,26 +252,32 @@ class VaultAutofillService : AutofillService() {
                     app.container.passwordRepository.upsertFromAutofill(
                         vaultId, capture.identifier, capture.username, capture.password
                     )
+                    callback.safeSuccess()
                 } catch (e: CancellationException) {
+                    callback.safeFailure("自动填充保存已取消")
                     throw e
                 } catch (_: Exception) {
-                    // Fall back to the deferred path so the capture is not lost.
-                    PendingAutofillSave.set(capture)
+                    callback.safeFailure("无法保存到密码库，请打开应用后重试")
                 }
             }
         } else {
             // Locked: stash the capture and bring the app forward so the user can unlock; the save
             // completes right after unlock. Stashing first means the capture survives even if the
             // activity start is suppressed by the OS background-launch limits.
-            PendingAutofillSave.set(capture)
-            runCatching {
+            val queued = PendingAutofillSave.set(capture)
+            if (!queued) {
+                callback.safeFailure("无法安全暂存账号，请解锁应用后重试")
+                return
+            }
+            val launched = runCatching {
                 startActivity(
                     Intent(this, MainActivity::class.java)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
-            }
+            }.isSuccess
+            if (launched) callback.safeSuccess()
+            else callback.safeFailure("请手动打开应用并解锁以完成保存")
         }
-        callback.safeSuccess()
     }
 
     private fun FillCallback.safeSuccess(response: FillResponse?) {
@@ -280,6 +286,10 @@ class VaultAutofillService : AutofillService() {
 
     private fun SaveCallback.safeSuccess() {
         runCatching { onSuccess() }
+    }
+
+    private fun SaveCallback.safeFailure(message: String) {
+        runCatching { onFailure(message) }
     }
 
     // ---- Matching ----------------------------------------------------------

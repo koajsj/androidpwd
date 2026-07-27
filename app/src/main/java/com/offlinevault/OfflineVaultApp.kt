@@ -90,13 +90,6 @@ class OfflineVaultApp : Application() {
         }
     }
 
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
-            SessionManager.lock()
-        }
-    }
-
     /** Saves a credential captured by autofill while the vault was locked, once it unlocks. */
     private suspend fun persistPendingAutofillSave() {
         val capture = PendingAutofillSave.consume() ?: return

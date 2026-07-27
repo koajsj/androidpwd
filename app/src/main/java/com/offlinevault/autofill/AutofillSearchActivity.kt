@@ -55,8 +55,11 @@ import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.security.SessionManager
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.theme.OfflineVaultTheme
+import com.offlinevault.utils.ClipboardHelper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -68,6 +71,7 @@ private data class AutofillCandidate(
 class AutofillSearchActivity : FragmentActivity() {
 
     private var backgroundedAt: Long = 0L
+    private var autoLockJob: Job? = null
 
     // This activity can return an Autofill Dataset containing plaintext credentials. Keep the
     // timeout in memory so returning from background cannot race a coroutine/DataStore read and
@@ -228,14 +232,30 @@ class AutofillSearchActivity : FragmentActivity() {
             return
         }
         backgroundedAt = System.currentTimeMillis()
-        if (autoLockSeconds == 0) SessionManager.lock()
+        scheduleAutoLock()
     }
 
     override fun onStart() {
         super.onStart()
+        autoLockJob?.cancel()
+        autoLockJob = null
+        ClipboardHelper.restorePendingSensitiveClear(applicationContext)
         if (!SessionManager.isUnlocked || backgroundedAt == 0L) return
         val seconds = autoLockSeconds
         if (seconds == 0 || System.currentTimeMillis() - backgroundedAt >= seconds * 1000L) {
+            SessionManager.lock()
+        }
+    }
+
+    private fun scheduleAutoLock() {
+        autoLockJob?.cancel()
+        val seconds = autoLockSeconds
+        if (seconds <= 0) {
+            SessionManager.lock()
+            return
+        }
+        autoLockJob = lifecycleScope.launch {
+            delay(seconds * 1000L)
             SessionManager.lock()
         }
     }

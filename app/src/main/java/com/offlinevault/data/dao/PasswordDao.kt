@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.data.model.PasswordHistoryEntity
@@ -21,6 +22,20 @@ interface PasswordDao {
 
     @Update
     suspend fun update(item: PasswordEntity)
+
+    /** Updates a credential and its previous-password history as one atomic operation. */
+    @Transaction
+    suspend fun updateWithHistory(
+        item: PasswordEntity,
+        historyEntry: PasswordHistoryEntity?,
+        historyKeep: Int
+    ) {
+        if (historyEntry != null) {
+            insertHistory(historyEntry)
+            pruneHistory(item.id, historyKeep)
+        }
+        update(item)
+    }
 
     @Delete
     suspend fun delete(item: PasswordEntity)

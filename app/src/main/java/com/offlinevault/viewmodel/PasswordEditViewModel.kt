@@ -4,10 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
+import com.offlinevault.data.model.TagCodec
 import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -31,6 +35,10 @@ class PasswordEditViewModel(
 
     private val _form = MutableStateFlow(EditFormState())
     val form: StateFlow<EditFormState> = _form.asStateFlow()
+    private val initialForm = MutableStateFlow(EditFormState())
+    val hasUnsavedChanges: StateFlow<Boolean> =
+        combine(_form, initialForm) { current, initial -> current != initial }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -49,7 +57,7 @@ class PasswordEditViewModel(
                     loadJob?.cancel()
                     saveJob?.cancel()
                     loadedKey = null
-                    _form.value = EditFormState()
+                    setInitialForm(EditFormState())
                     _errorMessage.value = null
                     _isSaving.value = false
                 }
@@ -66,24 +74,24 @@ class PasswordEditViewModel(
         _errorMessage.value = null
 
         if (passwordId == null) {
-            _form.value = EditFormState(vaultId = vaultId, isEditing = false)
+            setInitialForm(EditFormState(vaultId = vaultId, isEditing = false))
         } else {
             loadJob = viewModelScope.launch {
                 try {
                     val item = passwordRepository.getDecrypted(passwordId)
                     if (loadedKey != key) return@launch
                     if (item != null) {
-                        _form.value = EditFormState(
+                        setInitialForm(EditFormState(
                             id = item.id,
                             vaultId = item.vaultId,
                             title = item.title,
                             username = item.username,
                             password = item.password,
                             url = item.url,
-                            tags = item.tags.joinToString(", "),
+                            tags = item.tags.joinToString("\n"),
                             note = item.note,
                             isEditing = true
-                        )
+                        ))
                     } else {
                         _errorMessage.value = "未找到这条密码"
                     }
@@ -112,7 +120,7 @@ class PasswordEditViewModel(
         saveJob = viewModelScope.launch {
             _isSaving.value = true
             try {
-                val tags = f.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                val tags = TagCodec.normalize(f.tags.lines())
                 passwordRepository.save(
                     id = f.id,
                     vaultId = f.vaultId,
@@ -124,6 +132,7 @@ class PasswordEditViewModel(
                     note = f.note
                 )
                 vaultRepository.touch(f.vaultId)
+                initialForm.value = _form.value
                 onResult(true, null)
             } catch (e: CancellationException) {
                 throw e
@@ -137,5 +146,10 @@ class PasswordEditViewModel(
 
     fun clearError() {
         _errorMessage.value = null
+    }
+
+    private fun setInitialForm(value: EditFormState) {
+        initialForm.value = value
+        _form.value = value
     }
 }

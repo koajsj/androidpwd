@@ -108,19 +108,48 @@ object ClipboardHelper {
      */
     private fun clear(context: Context, expectedMarker: String) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        if (clipboard != null) {
-            val description = runCatching { clipboard.primaryClipDescription }.getOrNull()
-            val currentMarker = description?.extras?.getString(CLIP_MARKER_KEY)
-            if (currentMarker == expectedMarker) {
-                runCatching {
+        val description = clipboard?.let {
+            runCatching { it.primaryClipDescription }.getOrNull()
+        }
+        if (clipboard == null || description == null) {
+            // Clipboard reads are restricted for background apps on recent Android versions.
+            // Keep the non-sensitive marker and retry instead of declaring success while the
+            // password may still be present.
+            deferClearUntilForeground(context, expectedMarker)
+            return
+        }
+
+        val currentMarker = description.extras?.getString(CLIP_MARKER_KEY)
+        if (currentMarker == expectedMarker) {
+            val cleared = runCatching {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                         clipboard.clearPrimaryClip()
                     } else {
                         clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
                     }
-                }
+                }.isSuccess
+            if (!cleared) {
+                deferClearUntilForeground(context, expectedMarker)
+                return
             }
         }
+        // A different marker proves the user replaced the clip, so the old cleanup can be
+        // discarded without erasing unrelated clipboard content.
+        discardPendingClear(context, expectedMarker)
+    }
+
+    private fun deferClearUntilForeground(context: Context, expectedMarker: String) {
+        if (storedMarker(context) != expectedMarker && pendingMarker != expectedMarker) return
+        pendingClear?.let { handler.removeCallbacks(it) }
+        pendingMarker = expectedMarker
+        pendingClear = null
+        // A BroadcastReceiver is not a foreground clipboard reader either, so repeated alarms
+        // cannot make progress and only waste battery. Keep the persisted marker; the visible
+        // activities call restorePendingSensitiveClear() from onStart and retry immediately.
+        cancelScheduledClear(context)
+    }
+
+    private fun discardPendingClear(context: Context, expectedMarker: String) {
         if (pendingMarker == expectedMarker) {
             pendingClear?.let { handler.removeCallbacks(it) }
             pendingMarker = null

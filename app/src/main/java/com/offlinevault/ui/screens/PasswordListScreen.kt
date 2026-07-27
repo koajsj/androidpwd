@@ -90,6 +90,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.offlinevault.data.backup.ImportPreview
 import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.PasswordEntity
+import com.offlinevault.data.model.TagCodec
 import com.offlinevault.security.LockGuard
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.security.SessionManager
@@ -401,7 +402,7 @@ fun PasswordListScreen(
             if (tags.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(tags) { tag ->
+                    items(tags, key = { it.lowercase(Locale.ROOT) }) { tag ->
                         FilterChip(
                             selected = activeTag == tag,
                             onClick = { viewModel.qiehuanBiaoqian(tag) },
@@ -430,7 +431,7 @@ fun PasswordListScreen(
                     contentPadding = PaddingValues(bottom = 90.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(items, key = { it.id }) { item ->
+                    items(items, key = { it.id }, contentType = { "password" }) { item ->
                         PasswordCard(
                             item = item,
                             selected = item.id in selectedIds,
@@ -722,7 +723,7 @@ private fun PasswordCard(
     onToggleFavorite: () -> Unit
 ) {
     val level = PasswordStrengthChecker.levelFor(item.strengthScore)
-    val tagList = item.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    val tagList = remember(item.tags) { TagCodec.decode(item.tags) }
 
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()

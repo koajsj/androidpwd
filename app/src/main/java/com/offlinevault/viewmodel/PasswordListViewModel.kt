@@ -9,6 +9,7 @@ import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.data.model.TagCodec
 import com.offlinevault.data.repository.VaultDeleteResult
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.SessionManager
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -113,35 +115,40 @@ class PasswordListViewModel(
         }
     }
 
-    private data class ListQuery(val kuId: String, val query: String, val tag: String?, val sort: SortOrder)
-
-    val tiaomu: StateFlow<List<PasswordEntity>> =
-        combine(mimakuId, chaxunFangdou, biaoqianGuolv, paixu) { kuId, cxWen, biaoqian, sort ->
-            ListQuery(kuId, cxWen, biaoqian, sort)
+    // Share one decrypted metadata stream between the visible list and tag chips. Previously every
+    // query/tag change re-subscribed to Room and decrypted the complete vault again.
+    private val currentVaultRows =
+        mimakuId.flatMapLatest { kuId ->
+            if (kuId.isEmpty()) kotlinx.coroutines.flow.flowOf(emptyList())
+            else mimaCangku.passwordsByVault(kuId)
         }
-            .flatMapLatest { q ->
-                if (q.kuId.isEmpty()) {
-                    kotlinx.coroutines.flow.flowOf(emptyList())
-                } else {
-                    // A tag and a typed query are independent filters. The old branch order made
-                    // the search box appear unresponsive whenever a tag chip was selected.
-                    mimaCangku.passwordsByVault(q.kuId).map { rows ->
-                        rows.asSequence()
-                            .filter { item -> q.tag == null || item.hasTag(q.tag) }
-                            .filter { item -> q.query.isBlank() || item.matchesQuery(q.query) }
-                            .toList()
-                            .let { sortItems(it, q.sort) }
-                    }
-                }
-            }
-            // Row decryption + sorting happen off the main thread so large vaults never jank the UI.
             .flowOn(Dispatchers.Default)
             .catch { yichang ->
                 if (yichang is CancellationException) throw yichang
                 _cuowuXinxi.value = "无法读取密码数据"
                 emit(emptyList())
             }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            // Keep the shared stream alive for the ViewModel lifetime so SessionManager's lock
+            // emission immediately replaces replayed decrypted metadata with an empty list.
+            .shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
+
+    val tiaomu: StateFlow<List<PasswordEntity>> =
+        combine(currentVaultRows, chaxunFangdou, biaoqianGuolv, paixu) { rows, cxWen, biaoqian, sort ->
+            // A tag and a typed query are independent filters.
+            rows.asSequence()
+                .filter { item -> biaoqian == null || item.hasTag(biaoqian) }
+                .filter { item -> cxWen.isBlank() || item.matchesQuery(cxWen) }
+                .toList()
+                .let { sortItems(it, sort) }
+            }
+            // Filtering and sorting also stay off the main thread for large vaults.
+            .flowOn(Dispatchers.Default)
+            .catch { yichang ->
+                if (yichang is CancellationException) throw yichang
+                _cuowuXinxi.value = "无法读取密码数据"
+                emit(emptyList())
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Favorites always float to the top, then the chosen order applies.
     private fun sortItems(list: List<PasswordEntity>, order: SortOrder): List<PasswordEntity> {
@@ -154,11 +161,11 @@ class PasswordListViewModel(
     }
 
     private fun PasswordEntity.hasTag(tag: String): Boolean =
-        tags.split(',').map(String::trim).any { it.equals(tag, ignoreCase = true) }
+        TagCodec.decode(tags).any { it.equals(tag, ignoreCase = true) }
 
     private fun PasswordEntity.matchesQuery(query: String): Boolean {
         val normalizedQuery = query.trim()
-        return listOf(title, username, url, tags)
+        return (listOf(title, username, url) + TagCodec.decode(tags))
             .any { it.contains(normalizedQuery, ignoreCase = true) }
     }
 
@@ -203,13 +210,8 @@ class PasswordListViewModel(
 
     /** All distinct tags present in the current vault, for the filter row. */
     val biaoqianLiebiao: StateFlow<List<String>> =
-        mimakuId.flatMapLatest { kuId ->
-            if (kuId.isEmpty()) kotlinx.coroutines.flow.flowOf(emptyList())
-            else mimaCangku.passwordsByVault(kuId)
-        }.map { liebiao ->
-            liebiao.flatMap { it.tags.split(",") }
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
+        currentVaultRows.map { liebiao ->
+            liebiao.flatMap { TagCodec.decode(it.tags) }
                 .distinctBy { it.lowercase(Locale.ROOT) }
                 .sortedBy { it.lowercase(Locale.ROOT) }
         }.flowOn(Dispatchers.Default)
@@ -226,7 +228,7 @@ class PasswordListViewModel(
                 if (yichang is CancellationException) throw yichang
                 emit(emptyList())
             }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Opens the single default vault, creating it on first run. Used as the app's home. */
     fun jiazaiMoren() {

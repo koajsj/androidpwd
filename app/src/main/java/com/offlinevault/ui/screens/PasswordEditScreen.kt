@@ -1,5 +1,6 @@
 package com.offlinevault.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.filled.AutoMode
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,13 +63,25 @@ fun PasswordEditScreen(
     val form by viewModel.form.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
+    val hasUnsavedChanges by viewModel.hasUnsavedChanges.collectAsStateWithLifecycle()
 
     var reveal by remember { mutableStateOf(false) }
     var showGenerator by remember { mutableStateOf(false) }
+    var showDiscardConfirmation by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     val strength = PasswordStrengthChecker.evaluate(form.password)
+
+    fun requestBack() {
+        when {
+            isSaving -> Unit
+            hasUnsavedChanges -> showDiscardConfirmation = true
+            else -> onBack()
+        }
+    }
+
+    BackHandler(enabled = isSaving || hasUnsavedChanges) { requestBack() }
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
@@ -83,7 +97,7 @@ fun PasswordEditScreen(
             TopAppBar(
                 title = { Text(if (form.isEditing) "编辑密码" else "新建密码") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = ::requestBack, enabled = !isSaving) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
@@ -146,7 +160,12 @@ fun PasswordEditScreen(
                 Column {
                     VaultTextField(value = form.url, onValueChange = { v -> viewModel.update { it.copy(url = v) } }, label = "网址", keyboardType = KeyboardType.Uri)
                     Spacer(Modifier.height(12.dp))
-                    VaultTextField(value = form.tags, onValueChange = { v -> viewModel.update { it.copy(tags = v) } }, label = "标签（用逗号分隔）")
+                    VaultTextField(
+                        value = form.tags,
+                        onValueChange = { v -> viewModel.update { it.copy(tags = v) } },
+                        label = "标签（每行一个）",
+                        singleLine = false
+                    )
                     Spacer(Modifier.height(12.dp))
                     VaultTextField(value = form.note, onValueChange = { v -> viewModel.update { it.copy(note = v) } }, label = "备注（已加密）", singleLine = false)
                 }
@@ -177,6 +196,20 @@ fun PasswordEditScreen(
             onUse = { generated ->
                 viewModel.setPassword(generated)
                 showGenerator = false
+            }
+        )
+    }
+
+    if (showDiscardConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirmation = false },
+            title = { Text("放弃未保存的更改？") },
+            text = { Text("当前填写的内容尚未保存，返回后将无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = onBack) { Text("放弃更改") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirmation = false }) { Text("继续编辑") }
             }
         )
     }

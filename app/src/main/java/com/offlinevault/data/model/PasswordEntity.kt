@@ -29,7 +29,7 @@ data class PasswordEntity(
     val username: String,
     val encryptedPassword: String,
     val url: String = "",
-    val tags: String = "",            // comma separated
+    val tags: String = "",            // encrypted versioned tag list; legacy comma text is supported
     val encryptedNote: String = "",   // encrypted, may be empty
     val strengthScore: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),

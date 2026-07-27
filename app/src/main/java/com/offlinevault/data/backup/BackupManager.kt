@@ -8,10 +8,18 @@ import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.KdfVersions
+import com.google.gson.stream.JsonWriter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.util.Locale
+import javax.crypto.SecretKey
+import kotlin.coroutines.coroutineContext
 
 /**
  * Handles JSON (encrypted) and CSV import/export. Everything runs locally; nothing is uploaded.
@@ -92,40 +100,108 @@ class BackupManager(
             "备份密码至少需要 $MIN_BACKUP_PASSWORD_LENGTH 个字符"
         }
         val vaults = vaultRepository.allOnce().map { BackupVault(it.id, it.name, it.icon) }
-        val items = passwordRepository.allDecrypted().map {
-            BackupItem(it.vaultId, it.title, it.username, it.password, it.url, it.tags, it.note, it.favorite)
-        }
-        val plainJson = gson.toJson(BackupData(vaults, items))
-
+        require(vaults.size <= MAX_IMPORT_VAULTS) { "密码库数量过多，无法导出" }
+        val plainBytes = buildPlainBackupBytes(vaults)
         val salt = CryptoManager.newSalt()
         val kdf = KdfVersions.current()
         val iterations = kdf.iterations
-        val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
-        val plainBytes = plainJson.toByteArray(Charsets.UTF_8)
-        val integrityHash = CryptoManager.sha256Hex(plainBytes)
-        val blob = try {
-            CryptoManager.encrypt(key, plainBytes)
-        } finally {
-            plainBytes.fill(0)
-            CryptoManager.destroyKey(key)
-        }
-
+        var key: SecretKey? = null
+        var blob: ByteArray? = null
         return try {
+            val passwordChars = backupPassword.toCharArray()
+            key = try {
+                CryptoManager.deriveKey(passwordChars, salt, kdf)
+            } finally {
+                passwordChars.fill('\u0000')
+            }
+            val integrityHash = CryptoManager.sha256Hex(plainBytes)
+            val encryptedBlob = CryptoManager.encrypt(requireNotNull(key), plainBytes)
+            blob = encryptedBlob
+            CryptoManager.destroyKey(requireNotNull(key))
+            key = null
+
+            val encodedSalt = CryptoManager.encode(salt)
+            val encodedBlob = CryptoManager.encode(encryptedBlob)
             val wrapper = EncryptedBackup(
-                salt = CryptoManager.encode(salt),
-                data = CryptoManager.encode(blob),
+                salt = encodedSalt,
+                data = encodedBlob,
                 iterations = iterations,
                 kdfVersion = kdf.version,
                 integrityHash = integrityHash
             )
             val result = gson.toJson(wrapper)
-            if (!validateEncryptedJsonBackup(result, backupPassword)) {
-                throw IllegalStateException("备份校验失败")
-            }
+            // Gson serialization is checked without decrypting and materialising the complete
+            // plaintext backup a second time. AES-GCM authenticates the payload on import.
+            val parsed = gson.fromJson(result, EncryptedBackup::class.java)
+            check(
+                parsed.format == wrapper.format &&
+                    parsed.version == wrapper.version &&
+                    parsed.encrypted &&
+                    parsed.salt == encodedSalt &&
+                    parsed.data == encodedBlob &&
+                    parsed.iterations == iterations &&
+                    parsed.kdfVersion == kdf.version &&
+                    parsed.integrityHash == integrityHash
+            ) { "备份封装校验失败" }
             result
         } finally {
+            plainBytes.fill(0)
             salt.fill(0)
-            blob.fill(0)
+            blob?.fill(0)
+            key?.let(CryptoManager::destroyKey)
+        }
+    }
+
+    /**
+     * Serializes directly to UTF-8 while decrypting one row at a time. This avoids a complete
+     * DecryptedPassword list, BackupItem list and immutable UTF-16 JSON String existing together.
+     */
+    private suspend fun buildPlainBackupBytes(vaults: List<BackupVault>): ByteArray {
+        val output = WipeableByteArrayOutputStream()
+        val writer = JsonWriter(OutputStreamWriter(output, Charsets.UTF_8))
+        return try {
+            writer.beginObject()
+            writer.name("vaults").beginArray()
+            vaults.forEach { vault ->
+                writer.beginObject()
+                writer.name("id").value(vault.id)
+                writer.name("name").value(vault.name)
+                writer.name("icon").value(vault.icon)
+                writer.endObject()
+            }
+            writer.endArray()
+            writer.name("items").beginArray()
+            var itemCount = 0
+            passwordRepository.forEachDecrypted { item ->
+                itemCount++
+                require(itemCount <= MAX_IMPORT_ITEMS) { "密码项目过多，无法导出" }
+                writer.beginObject()
+                writer.name("vaultId").value(item.vaultId)
+                writer.name("title").value(item.title)
+                writer.name("username").value(item.username)
+                writer.name("password").value(item.password)
+                writer.name("url").value(item.url)
+                writer.name("tags").beginArray()
+                item.tags.forEach(writer::value)
+                writer.endArray()
+                writer.name("note").value(item.note)
+                writer.name("favorite").value(item.favorite)
+                writer.endObject()
+            }
+            writer.endArray()
+            writer.endObject()
+            writer.flush()
+            output.toByteArray()
+        } finally {
+            runCatching { writer.close() }
+            output.wipe()
+        }
+    }
+
+    private class WipeableByteArrayOutputStream : ByteArrayOutputStream() {
+        fun wipe() {
+            buf.fill(0)
+            reset()
         }
     }
 
@@ -262,6 +338,7 @@ class BackupManager(
         var invalidItems = 0
         val candidates = mutableListOf<ImportCandidate>()
         for (item in data.items) {
+            coroutineContext.ensureActive()
             val validItem = try {
                 isValidImportItem(item)
             } catch (_: Exception) {
@@ -332,6 +409,7 @@ class BackupManager(
         var invalidItems = 0
         val candidates = mutableListOf<ImportCandidate>()
         for (row in rows.drop(1)) {
+            coroutineContext.ensureActive()
             try {
                 fun at(index: Int) = if (index in row.indices) row[index].trim() else ""
                 val title = at(nameIdx).ifEmpty { at(urlIdx).ifEmpty { "已导入" } }
@@ -378,6 +456,7 @@ class BackupManager(
                 ?.toMutableMap()
                 ?: mutableMapOf()
             for (candidate in vaultItems) {
+                coroutineContext.ensureActive()
                 if (findMatchingExisting(seen, candidate) != null) {
                     duplicateItems++
                 } else {
@@ -424,6 +503,7 @@ class BackupManager(
                             .toMutableMap()
                         val toInsert = mutableListOf<DecryptedPassword>()
                         for (candidate in vaultCandidates) {
+                            coroutineContext.ensureActive()
                             if (findMatchingExisting(seen, candidate) != null) {
                                 skipped++
                             } else {
@@ -435,7 +515,10 @@ class BackupManager(
                     }
 
                     ImportConflictStrategy.KEEP_BOTH -> {
-                        val toInsert = vaultCandidates.map { it.toDecrypted() }
+                        val toInsert = vaultCandidates.map {
+                            coroutineContext.ensureActive()
+                            it.toDecrypted()
+                        }
                         imported += insertCandidates(vaultId, toInsert, errors).also { if (it < toInsert.size) failed += toInsert.size - it }
                     }
 
@@ -444,13 +527,16 @@ class BackupManager(
                             .mapValues { (_, value) -> value.toMutableList() }
                             .toMutableMap()
                         val pendingCreates = linkedMapOf<String, DecryptedPassword>()
-                        val updatedIds = mutableSetOf<String>()
                         var tempCounter = 0
 
                         for (candidate in vaultCandidates) {
+                            coroutineContext.ensureActive()
                             val existing = findMatchingExisting(seen, candidate)
                             if (existing != null) {
                                 if (existing.id.startsWith(PENDING_IMPORT_ID_PREFIX)) {
+                                    // The later duplicate replaces the pending row; account for the
+                                    // superseded input so result totals still match the preview.
+                                    skipped++
                                     val replacement = candidate.toDecrypted(existing.id)
                                     pendingCreates[existing.id] = replacement
                                     removeIndexedExisting(seen, existing.id)
@@ -468,7 +554,7 @@ class BackupManager(
                                             note = candidate.note,
                                             favorite = candidate.favorite
                                         )
-                                        if (updatedIds.add(existing.id)) updated++
+                                        updated++
                                         removeIndexedExisting(seen, existing.id)
                                         indexExisting(seen, candidate.toDecrypted(existing.id))
                                     } catch (e: CancellationException) {
@@ -576,7 +662,12 @@ class BackupManager(
                         else CryptoManager.LEGACY_PBKDF2_ITERATIONS
                     )
                     val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
-                    val key = CryptoManager.deriveKey(backupPassword.toCharArray(), salt, kdf)
+                    val passwordChars = backupPassword.toCharArray()
+                    val key = try {
+                        CryptoManager.deriveKey(passwordChars, salt, kdf)
+                    } finally {
+                        passwordChars.fill('\u0000')
+                    }
                     val plainBytes = try {
                         CryptoManager.decrypt(key, encryptedBytes)
                     } finally {
@@ -587,13 +678,17 @@ class BackupManager(
                     ) {
                         throw IllegalArgumentException("备份完整性校验失败")
                     }
-                    val plain = try {
-                        String(plainBytes, Charsets.UTF_8)
+                    return try {
+                        InputStreamReader(
+                            ByteArrayInputStream(plainBytes),
+                            Charsets.UTF_8
+                        ).use { reader ->
+                            gson.fromJson(reader, BackupData::class.java)
+                                ?: throw IllegalArgumentException("备份为空或格式无效")
+                        }
                     } finally {
                         plainBytes.fill(0)
                     }
-                    return gson.fromJson(plain, BackupData::class.java)
-                        ?: throw IllegalArgumentException("备份为空或格式无效")
                 } finally {
                     encryptedBytes.fill(0)
                 }
