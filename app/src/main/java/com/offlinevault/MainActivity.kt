@@ -244,6 +244,7 @@ private fun AppRoot() {
     val lockState by authVm.lockState.collectAsStateWithLifecycle()
     val unlockState by authVm.unlockState.collectAsStateWithLifecycle()
     val biometricEnabled by authVm.biometricEnabled.collectAsStateWithLifecycle()
+    val riskScore by authVm.riskScore.collectAsStateWithLifecycle()
     val recoveryQuestion by authVm.recoveryQuestion.collectAsStateWithLifecycle()
     val mnemonicEnabled by authVm.mnemonicEnabled.collectAsStateWithLifecycle()
     val credentialType by authVm.credentialType.collectAsStateWithLifecycle()
@@ -361,6 +362,7 @@ private fun AppRoot() {
                     UnlockScreen(
                         state = unlockState,
                         biometricEnabled = biometricEnabled,
+                        riskScore = riskScore,
                         credentialType = credentialType,
                         onUnlock = { authVm.unlockWithPassword(it) },
                         onBiometric = { triggerBiometricUnlock() },

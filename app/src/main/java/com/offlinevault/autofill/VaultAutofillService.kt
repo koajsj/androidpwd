@@ -386,7 +386,7 @@ class VaultAutofillService : AutofillService() {
         val direct = listOfNotNull(
             node.hint,
             node.idEntry,
-            node.className?.toString(),
+            node.className,
             node.htmlInfo?.tag
         )
         val htmlAttributes = node.htmlInfo?.attributes.orEmpty().flatMap { attr ->

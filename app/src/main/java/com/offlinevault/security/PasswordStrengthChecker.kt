@@ -11,6 +11,13 @@ data class StrengthResult(
     val warnings: List<String>
 )
 
+/** Non-secret password properties that may safely leave the crypto boundary. */
+data class PasswordCharacteristics(
+    val length: Int,
+    val characterClasses: Int,
+    val isCommonWeakPassword: Boolean
+)
+
 /**
  * Deterministic, fully offline password strength scorer.
  * Score range 0..100. 0-39 high risk, 40-69 medium risk, 70-100 low risk.
@@ -31,6 +38,24 @@ object PasswordStrengthChecker {
         else -> StrengthLevel.LOW_RISK
     }
 
+    /**
+     * Returns only aggregate characteristics. Callers must not retain the supplied password after
+     * this method returns.
+     */
+    fun characteristics(password: String): PasswordCharacteristics {
+        val classes = listOf(
+            password.any { it in 'a'..'z' },
+            password.any { it in 'A'..'Z' },
+            password.any { it.isDigit() },
+            password.any { !it.isLetterOrDigit() }
+        ).count { it }
+        return PasswordCharacteristics(
+            length = password.length,
+            characterClasses = classes,
+            isCommonWeakPassword = password.lowercase(Locale.ROOT) in COMMON_WEAK
+        )
+    }
+
     fun evaluate(password: String): StrengthResult {
         if (password.isEmpty()) {
             return StrengthResult(0, StrengthLevel.HIGH_RISK, listOf("密码不能为空"))
@@ -39,7 +64,8 @@ object PasswordStrengthChecker {
         val warnings = mutableListOf<String>()
         var score = 0
 
-        val length = password.length
+        val characteristics = characteristics(password)
+        val length = characteristics.length
         val hasLower = password.any { it in 'a'..'z' }
         val hasUpper = password.any { it in 'A'..'Z' }
         val hasDigit = password.any { it.isDigit() }
@@ -49,7 +75,7 @@ object PasswordStrengthChecker {
         val distinct = password.toSet().size
 
         // Immediate fail for a known weak password.
-        if (password.lowercase(Locale.ROOT) in COMMON_WEAK) {
+        if (characteristics.isCommonWeakPassword) {
             warnings.add("这是非常常见的弱密码")
             return StrengthResult(5, StrengthLevel.HIGH_RISK, warnings)
         }

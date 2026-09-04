@@ -33,6 +33,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.offlinevault.security.CredentialType
+import com.offlinevault.security.RiskLevel
+import com.offlinevault.security.RiskScore
 import com.offlinevault.ui.components.IconBadge
 import com.offlinevault.ui.components.PasswordVisualField
 import com.offlinevault.ui.components.PrimaryButton
@@ -44,6 +46,7 @@ import kotlin.math.roundToInt
 fun UnlockScreen(
     state: UnlockUiState,
     biometricEnabled: Boolean,
+    riskScore: RiskScore,
     credentialType: CredentialType,
     onUnlock: (String) -> Unit,
     onBiometric: () -> Unit,
@@ -72,8 +75,8 @@ fun UnlockScreen(
     }
 
     // Auto-trigger biometric once when arriving on a locked screen with biometrics enabled.
-    LaunchedEffect(biometricEnabled) {
-        if (biometricEnabled) onBiometric()
+    LaunchedEffect(biometricEnabled, riskScore.allowsBiometricOnly) {
+        if (biometricEnabled && riskScore.allowsBiometricOnly) onBiometric()
     }
 
     Column(
@@ -90,7 +93,11 @@ fun UnlockScreen(
         Text("离线密码库", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "已锁定，请输入${credentialType.noun}",
+            if (riskScore.level == RiskLevel.HIGH) {
+                "检测到本地安全风险，请输入${credentialType.noun}"
+            } else {
+                "已锁定，请输入${credentialType.noun}"
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -128,13 +135,29 @@ fun UnlockScreen(
             }
         }
 
-        if (biometricEnabled) {
+        if (riskScore.reasons.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                riskScore.reasons.joinToString("；"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (biometricEnabled && riskScore.allowsBiometricOnly) {
             Spacer(Modifier.height(16.dp))
             OutlinedButton(onClick = onBiometric, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                 Icon(Icons.Filled.Fingerprint, contentDescription = null)
                 Spacer(Modifier.height(0.dp))
                 Text("  使用指纹解锁")
             }
+        } else if (biometricEnabled) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "高风险状态下已暂停单独使用指纹解锁。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(8.dp))

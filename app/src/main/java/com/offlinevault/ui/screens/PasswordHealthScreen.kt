@@ -39,6 +39,7 @@ import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.theme.RiskHigh
 import com.offlinevault.ui.theme.RiskMedium
 import com.offlinevault.viewmodel.PasswordHealthViewModel
+import com.offlinevault.security.SecurityLevel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,6 +94,24 @@ fun PasswordHealthScreen(
                 ) {
                     item { SummaryCard(report) }
 
+                    if (report.security.recommendations.isNotEmpty()) {
+                        item {
+                            SectionCard {
+                                Column {
+                                    Text("本地安全建议", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.height(8.dp))
+                                    report.security.recommendations.forEach { recommendation ->
+                                        Text(
+                                            "• $recommendation",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (report.weak.isEmpty() && report.reused.isEmpty() && report.stale.isEmpty()) {
                         item {
                             SectionCard {
@@ -135,9 +154,31 @@ fun PasswordHealthScreen(
 
 @Composable
 private fun SummaryCard(report: PasswordHealthViewModel.HealthReport) {
+    val scoreColor = when (report.security.level) {
+        SecurityLevel.LOW -> MaterialTheme.colorScheme.primary
+        SecurityLevel.MEDIUM -> RiskMedium
+        SecurityLevel.HIGH, SecurityLevel.CRITICAL -> RiskHigh
+    }
+    val levelText = when (report.security.level) {
+        SecurityLevel.LOW -> "良好"
+        SecurityLevel.MEDIUM -> "需要注意"
+        SecurityLevel.HIGH -> "风险较高"
+        SecurityLevel.CRITICAL -> "风险严重"
+    }
     SectionCard {
         Column {
-            Text("共 ${report.total} 条密码", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column {
+                    Text("密码安全评分", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("完全在本地分析，不会上传密码", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("${report.security.score}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = scoreColor)
+                    Text(levelText, style = MaterialTheme.typography.bodySmall, color = scoreColor)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("共 ${report.total} 条密码 · 长度 30% · 复杂度 30% · 唯一性 20% · 更新时间 20%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Stat("弱密码", report.weak.size, RiskHigh)

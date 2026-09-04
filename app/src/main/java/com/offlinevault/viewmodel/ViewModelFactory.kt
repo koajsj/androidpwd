@@ -13,7 +13,11 @@ object ViewModelFactory {
     val Factory: ViewModelProvider.Factory = viewModelFactory {
 
         initializer {
-            AuthViewModel(app().container.keyManager, app().container.securityPreferences)
+            AuthViewModel(
+                app().container.keyManager,
+                app().container.securityPreferences,
+                app().container.riskEngine
+            )
         }
         initializer {
             PasswordListViewModel(

@@ -67,6 +67,10 @@ class SecurityPreferences(private val context: Context) {
 
         val FAILED_ATTEMPTS = intPreferencesKey("failed_attempts")
         val LAST_FAILED_AT = longPreferencesKey("last_failed_at")
+        // Local risk-engine state. No device ID, credential, or user behavior leaves this app.
+        val DEVICE_TRUSTED = booleanPreferencesKey("device_trusted")
+        val UNLOCK_WINDOW_STARTED_AT = longPreferencesKey("unlock_window_started_at")
+        val SUCCESSFUL_UNLOCKS_IN_WINDOW = intPreferencesKey("successful_unlocks_in_window")
     }
 
     // ---- Security material -------------------------------------------------
@@ -352,6 +356,40 @@ class SecurityPreferences(private val context: Context) {
         context.dataStore.edit {
             it[Keys.FAILED_ATTEMPTS] = 0
             it[Keys.LAST_FAILED_AT] = 0L
+        }
+    }
+
+    data class RiskSignals(
+        val deviceTrusted: Boolean,
+        val failedAttempts: Int,
+        val successfulUnlocksInWindow: Int,
+        val unlockWindowStartedAt: Long
+    )
+
+    /** Reads all risk inputs from one DataStore snapshot so policy decisions are consistent. */
+    suspend fun riskSignals(): RiskSignals {
+        val values = context.dataStore.data.first()
+        return RiskSignals(
+            deviceTrusted = values[Keys.DEVICE_TRUSTED] ?: false,
+            failedAttempts = (values[Keys.FAILED_ATTEMPTS] ?: 0).coerceAtLeast(0),
+            successfulUnlocksInWindow = (values[Keys.SUCCESSFUL_UNLOCKS_IN_WINDOW] ?: 0).coerceAtLeast(0),
+            unlockWindowStartedAt = values[Keys.UNLOCK_WINDOW_STARTED_AT] ?: 0L
+        )
+    }
+
+    /** Marks a device trusted only after a successful master credential authentication. */
+    suspend fun recordSuccessfulCredentialAuthentication(nowMillis: Long, windowMillis: Long) {
+        require(windowMillis > 0L) { "windowMillis must be positive" }
+        context.dataStore.edit {
+            val windowStart = it[Keys.UNLOCK_WINDOW_STARTED_AT] ?: 0L
+            val withinWindow = windowStart > 0L && nowMillis >= windowStart && nowMillis - windowStart <= windowMillis
+            it[Keys.UNLOCK_WINDOW_STARTED_AT] = if (withinWindow) windowStart else nowMillis
+            it[Keys.SUCCESSFUL_UNLOCKS_IN_WINDOW] = if (withinWindow) {
+                ((it[Keys.SUCCESSFUL_UNLOCKS_IN_WINDOW] ?: 0).coerceAtLeast(0) + 1).coerceAtMost(100)
+            } else {
+                1
+            }
+            it[Keys.DEVICE_TRUSTED] = true
         }
     }
 }

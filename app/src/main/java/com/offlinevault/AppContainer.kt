@@ -9,6 +9,7 @@ import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.KeyManager
 import com.offlinevault.security.MnemonicManager
+import com.offlinevault.security.RiskEngine
 
 /** Tiny manual dependency container. Keeps the app free of any DI framework. */
 class AppContainer(context: Context) {
@@ -18,6 +19,7 @@ class AppContainer(context: Context) {
 
     val securityPreferences = SecurityPreferences(context.applicationContext)
     val keyManager = KeyManager(securityPreferences, mnemonicManager)
+    val riskEngine = RiskEngine(securityPreferences)
     val integrityChecker = VaultIntegrityChecker(database)
 
     val vaultRepository = VaultRepository(database.vaultDao())

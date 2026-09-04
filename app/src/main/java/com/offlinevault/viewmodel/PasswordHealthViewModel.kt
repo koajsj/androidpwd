@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordHealthCandidate
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.security.PasswordSecurityAnalyzer
+import com.offlinevault.security.SecurityReport
 import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -25,11 +27,13 @@ class PasswordHealthViewModel(
     data class HealthEntry(val id: String, val title: String, val username: String)
 
     data class HealthReport(
-        val total: Int = 0,
+        val security: SecurityReport = SecurityReport.empty(),
         val weak: List<HealthEntry> = emptyList(),
         val reused: List<HealthEntry> = emptyList(),
         val stale: List<HealthEntry> = emptyList()
-    )
+    ) {
+        val total: Int get() = security.totalCredentials
+    }
 
     data class UiState(
         val loading: Boolean = true,
@@ -40,11 +44,6 @@ class PasswordHealthViewModel(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
     private var loadJob: Job? = null
-
-    private companion object {
-        const val WEAK_SCORE_BELOW = 40
-        const val STALE_DAYS = 180
-    }
 
     init {
         viewModelScope.launch {
@@ -74,25 +73,13 @@ class PasswordHealthViewModel(
 
     private suspend fun buildReport(): HealthReport {
         val all = passwordRepository.healthCandidatesSkippingCorrupt()
-        val withPassword = all.filter { it.passwordFingerprint != null }
-
-        val weak = withPassword
-            .filter { it.strengthScore < WEAK_SCORE_BELOW }
-            .map { it.toEntry() }
-
-        val reused = withPassword
-            .groupBy { it.passwordFingerprint }
-            .filterValues { it.size > 1 }
-            .values
-            .flatten()
-            .map { it.toEntry() }
-
-        val staleCutoff = System.currentTimeMillis() - STALE_DAYS * 24L * 60 * 60 * 1000
-        val stale = withPassword
-            .filter { it.updatedAt in 1 until staleCutoff }
-            .map { it.toEntry() }
-
-        return HealthReport(total = all.size, weak = weak, reused = reused, stale = stale)
+        val report = PasswordSecurityAnalyzer.analyze(all.map { it.toSecurityCandidate() })
+        return HealthReport(
+            security = report,
+            weak = all.filter { it.id in report.weakCredentialIds }.map { it.toEntry() },
+            reused = all.filter { it.id in report.reusedCredentialIds }.map { it.toEntry() },
+            stale = all.filter { it.id in report.staleCredentialIds }.map { it.toEntry() }
+        )
     }
 
     private fun PasswordHealthCandidate.toEntry() =

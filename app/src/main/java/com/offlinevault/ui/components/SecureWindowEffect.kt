@@ -20,7 +20,7 @@ fun SecureWindowEffect(enabled: Boolean) {
         }
         onDispose {
             if (enabled && !alreadySecure) {
-                window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             }
         }
     }

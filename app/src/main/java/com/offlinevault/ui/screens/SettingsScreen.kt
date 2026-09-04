@@ -531,18 +531,8 @@ fun SettingsScreen(
             SectionHeader("关于")
             SectionCard {
                 Column {
-                    ClickSetting("检查更新", "通过 GitHub Releases 获取新版") {
-                        val intent = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("https://github.com/koajsj/vault/releases/latest")
-                        )
-                        try {
-                            context.startActivity(intent)
-                        } catch (_: ActivityNotFoundException) {
-                            toast("未找到可打开更新页面的浏览器")
-                        } catch (_: Exception) {
-                            toast("无法打开更新页面")
-                        }
+                    ClickSetting("离线更新说明", "请通过受信任渠道获取并手动安装已签名 APK") {
+                        toast("为保护隐私，应用不会联网检查或下载更新")
                     }
                     SettingDivider()
                     ClickSetting(

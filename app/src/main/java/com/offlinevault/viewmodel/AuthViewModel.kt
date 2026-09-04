@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.security.CredentialType
 import com.offlinevault.security.KeyManager
+import com.offlinevault.security.RiskEngine
+import com.offlinevault.security.RiskScore
+import com.offlinevault.security.RiskLevel
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.UnlockResult
 import kotlinx.coroutines.flow.map
@@ -32,7 +35,8 @@ data class UnlockUiState(
 
 class AuthViewModel(
     private val keyManager: KeyManager,
-    private val prefs: SecurityPreferences
+    private val prefs: SecurityPreferences,
+    private val riskEngine: RiskEngine
 ) : ViewModel() {
 
     /** Top-level lock state driving navigation between setup / unlock / main. */
@@ -62,12 +66,20 @@ class AuthViewModel(
     private val _unlockState = MutableStateFlow(UnlockUiState())
     val unlockState: StateFlow<UnlockUiState> = _unlockState.asStateFlow()
 
+    private val _riskScore = MutableStateFlow(RiskScore(0, RiskLevel.LOW, emptyList()))
+    /** Local-only policy; contains no credential or device identifier. */
+    val riskScore: StateFlow<RiskScore> = _riskScore.asStateFlow()
+
     private val _setupError = MutableStateFlow<String?>(null)
     val setupError: StateFlow<String?> = _setupError.asStateFlow()
     private val _setupInProgress = MutableStateFlow(false)
     val setupInProgress: StateFlow<Boolean> = _setupInProgress.asStateFlow()
     private var setupJob: Job? = null
     private var unlockJob: Job? = null
+
+    init {
+        refreshRisk()
+    }
 
     fun setup(
         masterPassword: String,
@@ -84,6 +96,9 @@ class AuthViewModel(
                 prefs.setCredentialType(credentialType.key)
                 withContext(Dispatchers.Default) {
                     keyManager.setup(masterPassword, recoveryQuestion.trim(), recoveryAnswer, mnemonicPhrase)
+                }
+                withContext(Dispatchers.Default) {
+                    recordSuccessfulCredentialAuthenticationSafely()
                 }
                 _setupError.value = null
             } catch (e: CancellationException) {
@@ -113,8 +128,12 @@ class AuthViewModel(
                 return@launch
             }
             when (result) {
-                is UnlockResult.Success ->
+                is UnlockResult.Success -> {
+                    withContext(Dispatchers.Default) {
+                        recordSuccessfulCredentialAuthenticationSafely()
+                    }
                     _unlockState.value = UnlockUiState()
+                }
                 is UnlockResult.WrongCredential ->
                     _unlockState.value = _unlockState.value.copy(
                         isLoading = false,
@@ -134,12 +153,29 @@ class AuthViewModel(
                         errorMessage = result.message
                     )
             }
+            if (result !is UnlockResult.Success) refreshRisk()
         }
     }
 
     /** Returns a biometric-bound decrypt cipher (or null if biometric isn't usable). */
     fun prepareBiometricCipher(onReady: (Cipher?) -> Unit) {
         viewModelScope.launch {
+            val risk = try {
+                withContext(Dispatchers.Default) { riskEngine.evaluateNow() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Fail closed if local risk state cannot be read.
+                RiskScore(100, RiskLevel.HIGH, listOf("无法读取本地安全状态"))
+            }
+            _riskScore.value = risk
+            if (!risk.allowsBiometricOnly) {
+                _unlockState.value = _unlockState.value.copy(
+                    errorMessage = "当前安全风险较高，请输入${credentialType.value.noun}完成解锁"
+                )
+                onReady(null)
+                return@launch
+            }
             val cipher = try {
                 withContext(Dispatchers.Default) { keyManager.biometricDecryptCipher() }
             } catch (e: CancellationException) {
@@ -179,6 +215,7 @@ class AuthViewModel(
             } catch (_: Exception) {
                 _unlockState.value = _unlockState.value.copy(errorMessage = "指纹解锁失败")
             }
+            refreshRisk()
         }
     }
 
@@ -219,4 +256,32 @@ class AuthViewModel(
     }
 
     fun lock() = keyManager.lock()
+
+    private fun refreshRisk() {
+        viewModelScope.launch {
+            try {
+                refreshRiskNow()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _riskScore.value = RiskScore(100, RiskLevel.HIGH, listOf("无法读取本地安全状态"))
+            }
+        }
+    }
+
+    private suspend fun refreshRiskNow() {
+        _riskScore.value = riskEngine.evaluateNow()
+    }
+
+    /** Risk telemetry must never turn an already successful vault unlock into an app failure. */
+    private suspend fun recordSuccessfulCredentialAuthenticationSafely() {
+        try {
+            riskEngine.recordSuccessfulCredentialAuthentication()
+            refreshRiskNow()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            _riskScore.value = RiskScore(100, RiskLevel.HIGH, listOf("无法读取本地安全状态"))
+        }
+    }
 }

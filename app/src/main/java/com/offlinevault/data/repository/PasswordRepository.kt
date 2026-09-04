@@ -8,6 +8,7 @@ import com.offlinevault.data.model.TagCodec
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.PasswordStrengthChecker
+import com.offlinevault.security.PasswordSecurityCandidate
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultDataCorruptionException
 import kotlinx.coroutines.CancellationException
@@ -48,8 +49,21 @@ data class PasswordHealthCandidate(
     val username: String,
     val strengthScore: Int,
     val passwordFingerprint: String?,
+    val passwordLength: Int,
+    val characterClasses: Int,
+    val isCommonWeakPassword: Boolean,
     val updatedAt: Long
-)
+) {
+    fun toSecurityCandidate() = PasswordSecurityCandidate(
+        id = id,
+        strengthScore = strengthScore,
+        passwordFingerprint = passwordFingerprint,
+        passwordLength = passwordLength,
+        characterClasses = characterClasses,
+        isCommonWeakPassword = isCommonWeakPassword,
+        updatedAt = updatedAt
+    )
+}
 
 class PasswordRepository(private val passwordDao: PasswordDao) {
 
@@ -334,6 +348,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                 skipCorrupt {
                     val metadata = decryptMetadata(entity)
                     val password = decryptRequired(entity.encryptedPassword, "password", entity.id)
+                    val characteristics = PasswordStrengthChecker.characteristics(password)
                     PasswordHealthCandidate(
                         id = entity.id,
                         title = metadata.title,
@@ -342,6 +357,9 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                         passwordFingerprint = password
                             .takeIf { it.isNotBlank() }
                             ?.let { fingerprintForRun(it, runPepper) },
+                        passwordLength = characteristics.length,
+                        characterClasses = characteristics.characterClasses,
+                        isCommonWeakPassword = characteristics.isCommonWeakPassword,
                         updatedAt = entity.updatedAt
                     )
                 }
