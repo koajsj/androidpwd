@@ -192,6 +192,10 @@ class KeyManager(
         return try {
             rewrapMaster(dek, newMasterPassword)
             prefs.resetFailures()
+            // Recovery is never an unlock mechanism. The normal UI calls this while locked, but
+            // enforce that invariant here as well so a future caller cannot keep an old session
+            // alive after replacing the master credential.
+            SessionManager.lock()
             UnlockResult.Success
         } finally {
             CryptoManager.destroyKey(dek)
@@ -244,6 +248,9 @@ class KeyManager(
             return try {
                 rewrapMaster(dek, newMasterPassword)
                 prefs.resetFailures()
+                // A valid recovery phrase may reset the master credential only; it must not
+                // become a second, implicit daily-unlock path.
+                SessionManager.lock()
                 UnlockResult.Success
             } finally {
                 CryptoManager.destroyKey(dek)

@@ -52,6 +52,24 @@ class RiskEngineTest {
         assertEquals(0, evaluatePoints(-20).score)
     }
 
+    @Test
+    fun futureAccessWindowDoesNotCountAsHighFrequencyAccess() {
+        val score = evaluate(
+            RiskContext(
+                isNewDeviceState = false,
+                isRooted = false,
+                failedAttempts = 0,
+                successfulUnlocksInWindow = 8,
+                unlockWindowStartedAt = 10_000L,
+                hourOfDay = 14,
+                nowMillis = 9_000L
+            )
+        )
+
+        assertEquals(0, score.score)
+        assertEquals(RiskLevel.LOW, score.level)
+    }
+
     private fun evaluate(context: RiskContext): RiskScore = RiskPolicyEvaluator.evaluate(
         context,
         listOf(DeviceRiskRule(), BehaviorRiskRule(), TimeRiskRule())

@@ -49,6 +49,7 @@ class BehaviorRiskRule : RiskRule {
         context.failedAttempts >= 6 -> RiskRuleResult(30, "近期多次解锁失败")
         context.failedAttempts >= 3 -> RiskRuleResult(20, "近期存在多次解锁失败")
         context.successfulUnlocksInWindow >= 8 &&
+            context.nowMillis >= context.unlockWindowStartedAt &&
             context.nowMillis - context.unlockWindowStartedAt <= RiskEngine.ACCESS_WINDOW_MILLIS ->
             RiskRuleResult(15, "短时间内访问频率较高")
         else -> RiskRuleResult(0)

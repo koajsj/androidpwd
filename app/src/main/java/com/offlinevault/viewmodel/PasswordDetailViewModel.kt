@@ -41,6 +41,8 @@ class PasswordDetailViewModel(
                 entity?.let {
                     try {
                         passwordRepository.decrypt(it)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         _error.value = "这条凭据已损坏，无法解密。"
                         null
