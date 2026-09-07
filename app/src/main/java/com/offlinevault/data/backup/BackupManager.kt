@@ -1,6 +1,7 @@
 package com.offlinevault.data.backup
 
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.offlinevault.autofill.OriginMatcher
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.data.repository.DecryptedPassword
@@ -205,12 +206,6 @@ class BackupManager(
         }
     }
 
-    suspend fun validateEncryptedJsonBackup(content: String, backupPassword: String): Boolean =
-        runCatching {
-            val data = parseBackupData(content, backupPassword)
-            validateBackup(data) == null
-        }.getOrDefault(false)
-
     // ---- JSON import -------------------------------------------------------
 
     suspend fun previewJsonBackup(content: String, backupPassword: String): ImportPreview {
@@ -228,7 +223,7 @@ class BackupManager(
         try {
             // Parse once. Repeating PBKDF2 + AES-GCM merely to retrieve the vault rows makes
             // encrypted imports needlessly slow on older phones.
-            backupData = parseBackupData(content, backupPassword)
+            backupData = parseEncryptedBackupData(content, backupPassword)
             prepared = prepareJsonImport(backupData)
         } catch (e: CancellationException) {
             throw e
@@ -312,7 +307,7 @@ class BackupManager(
     // ---- Import planning ---------------------------------------------------
 
     private suspend fun prepareJsonImport(content: String, backupPassword: String): PreparedImport {
-        val data = parseBackupData(content, backupPassword)
+        val data = parseEncryptedBackupData(content, backupPassword)
         return prepareJsonImport(data)
     }
 
@@ -650,54 +645,74 @@ class BackupManager(
         return vaultRepository.create("已导入", "lock").id
     }
 
-    private fun parseBackupData(content: String, backupPassword: String): BackupData {
-        val wrapper = gson.fromJson(content, EncryptedBackup::class.java)
-        if (wrapper != null && wrapper.format == "offline-vault-backup" && wrapper.encrypted) {
-            val salt = CryptoManager.decode(wrapper.salt)
+    /**
+     * The JSON-backup UI is exclusively for encrypted Offline Vault wrappers. Keeping the wrapper
+     * shape check ahead of Gson deserialization prevents ordinary transfer JSON from being treated
+     * as a password-protected backup merely because model defaults happen to look valid.
+     */
+    private fun parseEncryptedBackupData(content: String, backupPassword: String): BackupData {
+        val wrapperObject = try {
+            JsonParser.parseString(content).takeIf { it.isJsonObject }?.asJsonObject
+        } catch (_: Exception) {
+            null
+        } ?: throw IllegalArgumentException("这不是加密备份文件")
+        require(
+            wrapperObject.has("format") &&
+                wrapperObject.has("encrypted") &&
+                wrapperObject.has("salt") &&
+                wrapperObject.has("data")
+        ) { "这不是加密备份文件" }
+        val wrapper = gson.fromJson(wrapperObject, EncryptedBackup::class.java)
+            ?: throw IllegalArgumentException("加密备份格式无效")
+        require(wrapper.format == "offline-vault-backup" && wrapper.encrypted) {
+            "这不是加密备份文件"
+        }
+        require(wrapper.salt.isNotBlank() && wrapper.data.isNotBlank()) {
+            "加密备份缺少必要数据"
+        }
+
+        val salt = CryptoManager.decode(wrapper.salt)
+        try {
+            val encryptedBytes = CryptoManager.decode(wrapper.data)
             try {
-                val encryptedBytes = CryptoManager.decode(wrapper.data)
-                try {
-                    val iterations = CryptoManager.requireValidIterations(
-                        if (wrapper.iterations > 0) wrapper.iterations
-                        else CryptoManager.LEGACY_PBKDF2_ITERATIONS
-                    )
-                    val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
-                    val passwordChars = backupPassword.toCharArray()
-                    val key = try {
-                        CryptoManager.deriveKey(passwordChars, salt, kdf)
-                    } finally {
-                        passwordChars.fill('\u0000')
-                    }
-                    val plainBytes = try {
-                        CryptoManager.decrypt(key, encryptedBytes)
-                    } finally {
-                        CryptoManager.destroyKey(key)
-                    }
-                    if (wrapper.integrityHash.isNotBlank() &&
-                        !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
-                    ) {
-                        throw IllegalArgumentException("备份完整性校验失败")
-                    }
-                    return try {
-                        InputStreamReader(
-                            ByteArrayInputStream(plainBytes),
-                            Charsets.UTF_8
-                        ).use { reader ->
-                            gson.fromJson(reader, BackupData::class.java)
-                                ?: throw IllegalArgumentException("备份为空或格式无效")
-                        }
-                    } finally {
-                        plainBytes.fill(0)
+                val iterations = CryptoManager.requireValidIterations(
+                    if (wrapper.iterations > 0) wrapper.iterations
+                    else CryptoManager.LEGACY_PBKDF2_ITERATIONS
+                )
+                val kdf = KdfVersions.stored(wrapper.kdfVersion, iterations)
+                val passwordChars = backupPassword.toCharArray()
+                val key = try {
+                    CryptoManager.deriveKey(passwordChars, salt, kdf)
+                } finally {
+                    passwordChars.fill('\u0000')
+                }
+                val plainBytes = try {
+                    CryptoManager.decrypt(key, encryptedBytes)
+                } finally {
+                    CryptoManager.destroyKey(key)
+                }
+                if (wrapper.integrityHash.isNotBlank() &&
+                    !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
+                ) {
+                    throw IllegalArgumentException("备份完整性校验失败")
+                }
+                return try {
+                    InputStreamReader(
+                        ByteArrayInputStream(plainBytes),
+                        Charsets.UTF_8
+                    ).use { reader ->
+                        gson.fromJson(reader, BackupData::class.java)
+                            ?: throw IllegalArgumentException("备份为空或格式无效")
                     }
                 } finally {
-                    encryptedBytes.fill(0)
+                    plainBytes.fill(0)
                 }
             } finally {
-                salt.fill(0)
+                encryptedBytes.fill(0)
             }
+        } finally {
+            salt.fill(0)
         }
-        return gson.fromJson(content, BackupData::class.java)
-            ?: throw IllegalArgumentException("备份为空或格式无效")
     }
 
     private fun validateBackup(data: BackupData): String? = try {

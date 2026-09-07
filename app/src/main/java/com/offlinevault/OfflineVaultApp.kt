@@ -81,7 +81,7 @@ class OfflineVaultApp : Application() {
                 if (integrity?.hasEncryptedDataIssues == true) {
                     Toast.makeText(
                         this@OfflineVaultApp,
-                        "发现损坏或被修改的密码记录，已隔离异常项目。",
+                        "发现未完成迁移、损坏或被修改的密码记录，已隔离异常项目。",
                         Toast.LENGTH_LONG
                     ).show()
                 }

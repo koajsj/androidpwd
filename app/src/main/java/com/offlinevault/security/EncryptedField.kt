@@ -13,6 +13,9 @@ object EncryptedField {
 
     fun isContextBound(value: String): Boolean = value.startsWith(PREFIX_V2)
 
+    /** True when a metadata value still needs the unlock-time legacy migration. */
+    fun requiresMetadataMigration(value: String): Boolean = !isContextBound(value)
+
     /** Encrypts a caller-supplied plaintext value into the current context-bound format. */
     fun encrypt(value: String, context: String): String {
         return PREFIX_V2 + CryptoManager.encryptString(
@@ -33,7 +36,11 @@ object EncryptedField {
         return encrypt(plaintext, context)
     }
 
-    /** Decrypts metadata; unprefixed plaintext is accepted only for the one-time legacy migration. */
+    /**
+     * Decrypts metadata written by a released encryption format. Plaintext metadata is deliberately
+     * not accepted here: only [migrate] may read it, so a failed legacy migration cannot become a
+     * permanent silent plaintext compatibility mode.
+     */
     fun decrypt(value: String, context: String): String = when {
         value.startsWith(PREFIX_V2) ->
             CryptoManager.decryptString(
@@ -43,7 +50,7 @@ object EncryptedField {
             )
         value.startsWith(PREFIX_V1) ->
             CryptoManager.decryptString(SessionManager.requireKey(), value.removePrefix(PREFIX_V1))
-        else -> value
+        else -> throw VaultDataCorruptionException("Unencrypted metadata requires migration")
     }
 
     /** Encrypts a password/note field. Unlike metadata, plaintext is never accepted on decrypt. */

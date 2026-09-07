@@ -2,6 +2,7 @@ package com.offlinevault.security
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EncryptedFieldTest {
@@ -31,6 +32,23 @@ class EncryptedFieldTest {
         try {
             val legacy = "enc:v1:" + CryptoManager.encryptString(SessionManager.requireKey(), "旧标题")
             val migrated = EncryptedField.migrate(legacy, "credential:1:title")
+            assertEquals("旧标题", EncryptedField.decrypt(migrated, "credential:1:title"))
+        } finally {
+            SessionManager.lock()
+        }
+    }
+
+    @Test
+    fun plaintextMetadataIsOnlyReadableThroughMigration() {
+        val key = CryptoManager.newDataEncryptionKey()
+        SessionManager.unlock(key)
+        try {
+            val legacyPlaintext = "旧标题"
+            assertTrue(EncryptedField.requiresMetadataMigration(legacyPlaintext))
+            assertThrows(VaultDataCorruptionException::class.java) {
+                EncryptedField.decrypt(legacyPlaintext, "credential:1:title")
+            }
+            val migrated = EncryptedField.migrate(legacyPlaintext, "credential:1:title")
             assertEquals("旧标题", EncryptedField.decrypt(migrated, "credential:1:title"))
         } finally {
             SessionManager.lock()

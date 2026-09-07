@@ -142,9 +142,12 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         note: String,
         favorite: Boolean? = null
     ): String {
-        SessionManager.requireKey()
+        val sessionGeneration = SessionManager.requireActiveSession()
         val now = System.currentTimeMillis()
         val existing = id?.let { passwordDao.getById(it) }
+        require(existing == null || existing.vaultId == vaultId) {
+            "Credential belongs to a different vault"
+        }
         val entityId = existing?.id ?: UUID.randomUUID().toString()
 
         val entity = PasswordEntity(
@@ -170,12 +173,15 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         // Edits MUST use UPDATE, not INSERT-OR-REPLACE: REPLACE deletes the old row first, which
         // cascade-deletes its password_history. UPDATE changes the row in place and keeps history.
         if (existing != null) {
+            val historyEntry = historyEntryIfChanged(existing, password)
+            SessionManager.requireActiveSession(sessionGeneration)
             passwordDao.updateWithHistory(
                 entity,
-                historyEntryIfChanged(existing, password),
+                historyEntry,
                 HISTORY_KEEP
             )
         } else {
+            SessionManager.requireActiveSession(sessionGeneration)
             passwordDao.insert(entity)
         }
         return entity.id
@@ -183,16 +189,24 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Moves a credential to the recycle bin (soft delete) instead of erasing it immediately. */
     suspend fun deleteById(id: String) {
+        val sessionGeneration = SessionManager.requireActiveSession()
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.softDelete(id, System.currentTimeMillis())
     }
 
     /** Moves several credentials to the recycle bin at once (batch delete). */
     suspend fun deleteMany(ids: List<String>) {
-        if (ids.isNotEmpty()) passwordDao.softDeleteMany(ids, System.currentTimeMillis())
+        if (ids.isNotEmpty()) {
+            val sessionGeneration = SessionManager.requireActiveSession()
+            SessionManager.requireActiveSession(sessionGeneration)
+            passwordDao.softDeleteMany(ids, System.currentTimeMillis())
+        }
     }
 
     /** Pins/unpins a credential. Favorites sort to the top of the list. */
     suspend fun setFavorite(id: String, favorite: Boolean) {
+        val sessionGeneration = SessionManager.requireActiveSession()
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.setFavorite(id, favorite)
     }
 
@@ -206,21 +220,31 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
             }
 
     suspend fun restore(id: String) {
+        val sessionGeneration = SessionManager.requireActiveSession()
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.restore(id)
     }
 
     /** Permanently erases a single trashed (or any) row by id. */
     suspend fun permanentlyDelete(id: String) {
-        passwordDao.getById(id)?.let { passwordDao.delete(it) }
+        val sessionGeneration = SessionManager.requireActiveSession()
+        passwordDao.getById(id)?.let {
+            SessionManager.requireActiveSession(sessionGeneration)
+            passwordDao.delete(it)
+        }
     }
 
     suspend fun emptyTrash() {
+        val sessionGeneration = SessionManager.requireActiveSession()
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.emptyTrash()
     }
 
     /** Auto-purge: erase trashed rows older than [retentionDays]. Called once per unlock. */
     suspend fun purgeExpiredTrash(retentionDays: Int = TRASH_RETENTION_DAYS) {
+        val sessionGeneration = SessionManager.requireActiveSession()
         val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.purgeTrashedOlderThan(cutoff)
     }
 
@@ -271,9 +295,9 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
      * instead of creating a duplicate. [identifier] is a domain or an `androidapp://<package>` id.
      */
     suspend fun upsertFromAutofill(vaultId: String, identifier: String, username: String, password: String) {
-        SessionManager.requireKey()
+        val sessionGeneration = SessionManager.requireActiveSession()
         val now = System.currentTimeMillis()
-        val existing = passwordDao.getAllOnce().firstOrNull { entity ->
+        val existing = passwordDao.getPasswordsByVaultIdOnce(vaultId).firstOrNull { entity ->
             skipCorrupt {
                 val url = EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url"))
                 val user = EncryptedField.decrypt(entity.username, fieldContext(entity.id, "username"))
@@ -289,9 +313,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                     strengthScore = PasswordStrengthChecker.evaluate(password).score,
                     updatedAt = now
                 )
+            val historyEntry = historyEntryIfChanged(existing, password)
+            SessionManager.requireActiveSession(sessionGeneration)
             passwordDao.updateWithHistory(
                 updated,
-                historyEntryIfChanged(existing, password),
+                historyEntry,
                 HISTORY_KEEP
             )
             return
@@ -399,11 +425,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Bulk insert used by import. Each [DecryptedPassword] is encrypted before storage. */
     suspend fun importDecrypted(vaultId: String, items: List<DecryptedPassword>): Int {
-        SessionManager.requireKey()
+        val sessionGeneration = SessionManager.requireActiveSession()
         val now = System.currentTimeMillis()
         val entities = items.map { item ->
             coroutineContext.ensureActive()
-            SessionManager.requireKey()
+            SessionManager.requireActiveSession(sessionGeneration)
             val entityId = UUID.randomUUID().toString()
             PasswordEntity(
                 id = entityId,
@@ -427,11 +453,13 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                 favorite = item.favorite
             )
         }
+        SessionManager.requireActiveSession(sessionGeneration)
         passwordDao.insertAll(entities)
         return entities.size
     }
 
     suspend fun migrateLegacyEncryption() {
+        val sessionGeneration = SessionManager.requireActiveSession()
         passwordDao.getAllIncludingTrashedOnce().forEach { row ->
             try {
                 val migrated = row.copy(
@@ -447,6 +475,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                         EncryptedField.migrateSecret(row.encryptedNote, fieldContext(row.id, "note"))
                 )
                 if (migrated != row) {
+                    SessionManager.requireActiveSession(sessionGeneration)
                     passwordDao.migrateEncryptionIfUnchanged(
                         id = row.id,
                         oldTitle = row.title,
@@ -478,6 +507,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                     )
                 )
                 if (migrated != row) {
+                    SessionManager.requireActiveSession(sessionGeneration)
                     passwordDao.migrateHistoryEncryptionIfUnchanged(
                         id = row.id,
                         oldEncryptedPassword = row.encryptedPassword,

@@ -67,18 +67,23 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
+                INSTANCE ?: databaseBuilder(
                     context.applicationContext,
-                    AppDatabase::class.java,
                     // NEVER rename this file or the user's existing vault becomes orphaned.
                     "offline_vault.db"
-                )
-                    // Data-safety policy: every schema bump MUST ship a Migration here. Do NOT add
-                    // fallbackToDestructiveMigration() — a missing migration should fail loudly,
-                    // never silently wipe the encrypted vault.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                    .build()
+                ).build()
                     .also { INSTANCE = it }
             }
+
+        /** Used only by instrumentation migration tests with an isolated temporary database name. */
+        internal fun openForMigrationTest(context: Context, databaseName: String): AppDatabase =
+            databaseBuilder(context.applicationContext, databaseName).build()
+
+        private fun databaseBuilder(context: Context, databaseName: String) =
+            Room.databaseBuilder(context, AppDatabase::class.java, databaseName)
+                // Data-safety policy: every schema bump MUST ship a Migration here. Do NOT add
+                // fallbackToDestructiveMigration() — a missing migration should fail loudly,
+                // never silently wipe the encrypted vault.
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
     }
 }

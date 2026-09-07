@@ -41,4 +41,23 @@ object SessionManager {
     /** Returns the active DEK or throws if the app is locked. */
     fun requireKey(): SecretKey =
         dek ?: throw IllegalStateException("Vault is locked")
+
+    /**
+     * Captures the current session for a sensitive operation. Call [requireActiveSession] again
+     * immediately before committing data so work resumed from an old coroutine cannot write after
+     * a lock or a subsequent unlock.
+     */
+    @Synchronized
+    fun requireActiveSession(): Long {
+        requireKey()
+        return sessionGenerationCounter.get()
+    }
+
+    /** Rejects work that belongs to a session which has since been locked or replaced. */
+    @Synchronized
+    fun requireActiveSession(expectedGeneration: Long) {
+        check(dek != null && sessionGenerationCounter.get() == expectedGeneration) {
+            "Vault session is no longer active"
+        }
+    }
 }

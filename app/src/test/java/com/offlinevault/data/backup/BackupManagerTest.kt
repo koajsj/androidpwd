@@ -8,6 +8,7 @@ import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
+import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -41,8 +42,10 @@ class BackupManagerTest {
     @Test fun encryptedStreamingBackupRoundTripsEmptyAndPopulatedVaults() = runBlocking {
         val emptyVault = vaultRepository.create("空密码库", "lock")
         val emptyBackup = manager.buildEncryptedJsonBackup("backup-pass")
-        assertTrue(manager.validateEncryptedJsonBackup(emptyBackup, "backup-pass"))
-        assertFalse(manager.validateEncryptedJsonBackup(emptyBackup, "wrong-pass"))
+        assertEquals(0, manager.previewJsonBackup(emptyBackup, "backup-pass").totalItems)
+        assertThrows(Exception::class.java) {
+            runBlocking { manager.previewJsonBackup(emptyBackup, "wrong-pass") }
+        }
 
         passwordRepository.save(
             id = null,
@@ -56,7 +59,6 @@ class BackupManagerTest {
         )
         val populatedBackup = manager.buildEncryptedJsonBackup("backup-pass")
 
-        assertTrue(manager.validateEncryptedJsonBackup(populatedBackup, "backup-pass"))
         val preview = manager.previewJsonBackup(populatedBackup, "backup-pass")
         assertEquals(1, preview.totalItems)
         assertEquals(1, preview.duplicateItems)
@@ -83,6 +85,122 @@ class BackupManagerTest {
         assertEquals(0, result.failed)
         assertEquals(2, result.imported + result.skippedDuplicates + result.updated + result.failed)
         assertEquals(1, passwordDao.getPasswordsByVaultIdOnce(vault.id).size)
+    }
+
+    @Test fun encryptedJsonImportRejectsPlainJsonAndWrongPassword() = runBlocking {
+        val plainJson = """{"vaults":[],"items":[]}"""
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { manager.previewJsonBackup(plainJson, "backup-pass") }
+        }
+
+        val encrypted = manager.buildEncryptedJsonBackup("backup-pass")
+        assertThrows(Exception::class.java) {
+            runBlocking { manager.previewJsonBackup(encrypted, "incorrect-pass") }
+        }
+        val result = manager.importJsonBackup(plainJson, "backup-pass")
+        assertEquals(0, result.imported)
+        assertTrue(result.errors.single().contains("加密备份"))
+    }
+
+    @Test fun autofillUpsertOnlyUpdatesTheRequestedVault() = runBlocking {
+        val firstVault = vaultRepository.create("个人", "lock")
+        val secondVault = vaultRepository.create("工作", "lock")
+        passwordRepository.save(
+            id = null,
+            vaultId = firstVault.id,
+            title = "Example",
+            username = "user@example.com",
+            password = "first-password",
+            url = "https://example.com",
+            tags = emptyList(),
+            note = ""
+        )
+        passwordRepository.save(
+            id = null,
+            vaultId = secondVault.id,
+            title = "Example",
+            username = "user@example.com",
+            password = "second-password",
+            url = "https://example.com",
+            tags = emptyList(),
+            note = ""
+        )
+
+        passwordRepository.upsertFromAutofill(
+            secondVault.id,
+            "example.com",
+            "user@example.com",
+            "updated-second-password"
+        )
+
+        assertEquals("first-password", passwordRepository.decryptedForVault(firstVault.id).single().password)
+        assertEquals(
+            "updated-second-password",
+            passwordRepository.decryptedForVault(secondVault.id).single().password
+        )
+    }
+
+    @Test fun lockedSessionRejectsAllPasswordRepositoryWrites() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val id = passwordRepository.save(
+            id = null,
+            vaultId = vault.id,
+            title = "Example",
+            username = "user",
+            password = "password",
+            url = "https://example.com",
+            tags = emptyList(),
+            note = ""
+        )
+        passwordRepository.deleteById(id)
+        SessionManager.lock()
+
+        val writes = listOf<suspend () -> Unit>(
+            { passwordRepository.save(null, vault.id, "new", "user", "password", "", emptyList(), "") },
+            { passwordRepository.deleteById(id) },
+            { passwordRepository.deleteMany(listOf(id)) },
+            { passwordRepository.setFavorite(id, true) },
+            { passwordRepository.restore(id) },
+            { passwordRepository.permanentlyDelete(id) },
+            { passwordRepository.emptyTrash() },
+            { passwordRepository.purgeExpiredTrash() },
+            { passwordRepository.upsertFromAutofill(vault.id, "example.com", "user", "new") },
+            { passwordRepository.importDecrypted(vault.id, emptyList()) }
+        )
+        writes.forEach { write ->
+            assertThrows(IllegalStateException::class.java) { runBlocking { write() } }
+        }
+        assertEquals(1, passwordDao.getAllIncludingTrashedOnce().size)
+    }
+
+    @Test fun legacyMetadataMigratesInPlaceBeforeStrictReads() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val id = "legacy-credential"
+        passwordDao.insert(
+            PasswordEntity(
+                id = id,
+                vaultId = vault.id,
+                title = "旧标题",
+                username = "old-user",
+                encryptedPassword = CryptoManager.encryptString(SessionManager.requireKey(), "old-password"),
+                url = "https://legacy.example",
+                tags = "旧标签",
+                encryptedNote = CryptoManager.encryptString(SessionManager.requireKey(), "old-note")
+            )
+        )
+
+        passwordRepository.migrateLegacyEncryption()
+
+        val stored = requireNotNull(passwordDao.getById(id))
+        assertTrue(EncryptedField.isContextBound(stored.title))
+        assertTrue(EncryptedField.isContextBound(stored.username))
+        assertTrue(EncryptedField.isContextBound(stored.url))
+        assertTrue(EncryptedField.isContextBound(stored.tags))
+        assertTrue(EncryptedField.isContextBound(stored.encryptedPassword))
+        assertTrue(EncryptedField.isContextBound(stored.encryptedNote))
+        assertEquals("old-password", passwordRepository.getDecrypted(id)?.password)
+        assertEquals("old-note", passwordRepository.getDecrypted(id)?.note)
     }
 
     @Test fun invalidCsvRowDoesNotDiscardValidNeighbour() = runBlocking {
@@ -197,7 +315,15 @@ class BackupManagerTest {
             id: String,
             oldEncryptedPassword: String,
             newEncryptedPassword: String
-        ): Int = 0
+        ): Int {
+            val existing = history.value.firstOrNull {
+                it.id == id && it.encryptedPassword == oldEncryptedPassword
+            } ?: return 0
+            history.value = history.value.map {
+                if (it.id == existing.id) it.copy(encryptedPassword = newEncryptedPassword) else it
+            }
+            return 1
+        }
 
         override fun historyCount(passwordId: String): Flow<Int> =
             history.map { list -> list.count { it.passwordId == passwordId } }
@@ -229,6 +355,31 @@ class BackupManagerTest {
             newUrl: String,
             newTags: String,
             newNote: String
-        ): Int = 0
+        ): Int {
+            val existing = rows.value.firstOrNull {
+                it.id == id &&
+                    it.title == oldTitle &&
+                    it.username == oldUsername &&
+                    it.encryptedPassword == oldPassword &&
+                    it.url == oldUrl &&
+                    it.tags == oldTags &&
+                    it.encryptedNote == oldNote
+            } ?: return 0
+            rows.value = rows.value.map {
+                if (it.id == existing.id) {
+                    it.copy(
+                        title = newTitle,
+                        username = newUsername,
+                        encryptedPassword = newPassword,
+                        url = newUrl,
+                        tags = newTags,
+                        encryptedNote = newNote
+                    )
+                } else {
+                    it
+                }
+            }
+            return 1
+        }
     }
 }

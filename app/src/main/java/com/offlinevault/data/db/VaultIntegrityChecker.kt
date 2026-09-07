@@ -8,10 +8,12 @@ data class VaultIntegrityReport(
     val databaseHealthy: Boolean,
     val invalidVaultMetadata: Int,
     val invalidCredentials: Int,
-    val invalidHistoryEntries: Int
+    val invalidHistoryEntries: Int,
+    /** Legacy v1 or plaintext metadata that the unlock-time migration did not finish rewriting. */
+    val legacyMetadataEntries: Int = 0
 ) {
     val hasEncryptedDataIssues: Boolean
-        get() = invalidVaultMetadata + invalidCredentials + invalidHistoryEntries > 0
+        get() = invalidVaultMetadata + invalidCredentials + invalidHistoryEntries + legacyMetadataEntries > 0
 }
 
 /**
@@ -30,12 +32,16 @@ class VaultIntegrityChecker(private val database: AppDatabase) {
         if (!databaseHealthy) return VaultIntegrityReport(false, 0, 0, 0)
 
         SessionManager.requireKey()
-        val invalidVaults = database.vaultDao().getAllVaultsOnce().count { vault ->
+        val vaults = database.vaultDao().getAllVaultsOnce()
+        val credentials = database.passwordDao().getAllIncludingTrashedOnce()
+        val legacyMetadata = vaults.count { EncryptedField.requiresMetadataMigration(it.name) } +
+            credentials.count(::hasLegacyMetadata)
+        val invalidVaults = vaults.count { vault ->
             runCatching {
                 EncryptedField.decrypt(vault.name, "vault:${vault.id}:name")
             }.isFailure
         }
-        val invalidCredentials = database.passwordDao().getAllIncludingTrashedOnce().count { row ->
+        val invalidCredentials = credentials.count { row ->
             runCatching {
                 EncryptedField.decrypt(row.title, credentialContext(row.id, "title"))
                 EncryptedField.decrypt(row.username, credentialContext(row.id, "username"))
@@ -58,8 +64,20 @@ class VaultIntegrityChecker(private val database: AppDatabase) {
                 )
             }.isFailure
         }
-        return VaultIntegrityReport(true, invalidVaults, invalidCredentials, invalidHistory)
+        return VaultIntegrityReport(
+            databaseHealthy = true,
+            invalidVaultMetadata = invalidVaults,
+            invalidCredentials = invalidCredentials,
+            invalidHistoryEntries = invalidHistory,
+            legacyMetadataEntries = legacyMetadata
+        )
     }
 
     private fun credentialContext(id: String, field: String): String = "credential:$id:$field"
+
+    private fun hasLegacyMetadata(row: com.offlinevault.data.model.PasswordEntity): Boolean =
+        EncryptedField.requiresMetadataMigration(row.title) ||
+            EncryptedField.requiresMetadataMigration(row.username) ||
+            EncryptedField.requiresMetadataMigration(row.url) ||
+            EncryptedField.requiresMetadataMigration(row.tags)
 }
