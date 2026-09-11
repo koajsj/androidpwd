@@ -178,7 +178,12 @@ class VaultAutofillService : AutofillService() {
                 val usernameScore = usernameScore(node, hints, inputType)
 
                 if (isPassword) {
-                    passwordCandidates += FieldCandidate(autofillId, value, fieldOrder)
+                    passwordCandidates += FieldCandidate(
+                        id = autofillId,
+                        value = value,
+                        order = fieldOrder,
+                        score = passwordScore(node, hints)
+                    )
                 } else if (usernameScore > 0) {
                     usernameCandidates += FieldCandidate(autofillId, value, fieldOrder, usernameScore)
                 }
@@ -193,7 +198,11 @@ class VaultAutofillService : AutofillService() {
             traverse(structure.getWindowNodeAt(i).rootViewNode, depth = 0)
         }
 
-        val primaryPassword = passwordCandidates.firstOrNull()
+        // Prefer a new-password field on registration/change forms, and never select a
+        // confirmation field. A plain login password keeps the natural first-field fallback.
+        val primaryPassword = passwordCandidates.filter { it.score > -100 }.maxWithOrNull(
+            compareBy<FieldCandidate> { it.score }.thenByDescending { -it.order }
+        )
         val firstPasswordOrder = primaryPassword?.order ?: Int.MAX_VALUE
         val primaryUsername = usernameCandidates
             .filter { it.order < firstPasswordOrder }
@@ -201,15 +210,21 @@ class VaultAutofillService : AutofillService() {
             ?: usernameCandidates.maxWithOrNull(compareBy<FieldCandidate> { it.score }.thenBy { -it.order })
         val usernameValue = primaryUsername?.value?.takeIf { it.isNotBlank() }
             ?: usernameCandidates.firstNotNullOfOrNull { it.value?.takeIf(String::isNotBlank) }
-        val passwordValue = passwordCandidates
-            .asReversed()
-            .firstNotNullOfOrNull { it.value?.takeIf { value -> value.isNotEmpty() } }
-            ?: primaryPassword?.value
+        // Save the value belonging to the field declared in SaveInfo. Confirmation-password
+        // fields are optional and must never replace the actual password.
+        val passwordValue = primaryPassword?.value
 
         return ParsedFields(
             usernameId = primaryUsername?.id,
             passwordId = primaryPassword?.id,
-            extraPasswordIds = passwordCandidates.drop(1).map { it.id },
+            // The selected mandatory field is not necessarily the first field encountered on a
+            // change-password form. It must never also be passed as an optional SaveInfo field.
+            extraPasswordIds = passwordCandidates
+                .asSequence()
+                .map { it.id }
+                .filter { it != primaryPassword?.id }
+                .distinct()
+                .toList(),
             webDomain = webDomain,
             packageName = packageName,
             usernameValue = usernameValue,
@@ -244,14 +259,25 @@ class VaultAutofillService : AutofillService() {
             password = password
         )
 
-        if (SessionManager.isUnlocked) {
+        val expectedGeneration = try {
+            SessionManager.requireActiveSession()
+        } catch (_: Exception) {
+            null
+        }
+        if (expectedGeneration != null) {
             val app = application as OfflineVaultApp
             serviceScope.launch {
                 try {
-                    val vaultId = app.container.vaultRepository.ensureDefault().id
-                    app.container.passwordRepository.upsertFromAutofill(
-                        vaultId, capture.identifier, capture.username, capture.password
-                    )
+                    SessionManager.withActiveSession {
+                        // The framework may deliver a save callback after a lifecycle change.
+                        // Never persist a capture from an older unlocked session.
+                        SessionManager.requireActiveSession(expectedGeneration)
+                        val vaultId = app.container.vaultRepository.ensureDefault().id
+                        app.container.passwordRepository.upsertFromAutofill(
+                            vaultId, capture.identifier, capture.username, capture.password
+                        )
+                        SessionManager.requireActiveSession(expectedGeneration)
+                    }
                     callback.safeSuccess()
                 } catch (e: CancellationException) {
                     callback.safeFailure("自动填充保存已取消")
@@ -370,6 +396,22 @@ class VaultAutofillService : AutofillService() {
         val surfaces = textSurfaces(node)
         val keywords = listOf("password", "passwd", "passcode", "pwd", "密码", "口令")
         return keywords.any { keyword -> surfaces.any { it.contains(keyword) } }
+    }
+
+    private fun passwordScore(node: AssistStructure.ViewNode, hints: List<String>): Int {
+        val surfaces = (hints + textSurfaces(node)).joinToString(" ")
+        return when {
+            listOf("confirm", "confirmation", "repeat", "reenter", "verify", "确认", "重复", "再次").any {
+                surfaces.contains(it)
+            } -> -100
+            listOf("newpassword", "new_password", "new-password", "new password", "新密码").any {
+                surfaces.contains(it)
+            } -> 20
+            listOf("current", "oldpassword", "old_password", "old-password", "old password", "当前密码", "旧密码").any {
+                surfaces.contains(it)
+            } -> 0
+            else -> 10
+        }
     }
 
     private fun looksLikeUsername(node: AssistStructure.ViewNode): Boolean {

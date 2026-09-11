@@ -3,13 +3,16 @@ package com.offlinevault.data.backup
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.offlinevault.autofill.OriginMatcher
+import com.offlinevault.data.db.AppDatabase
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.KdfVersions
+import com.offlinevault.security.VaultLockedException
 import com.google.gson.stream.JsonWriter
+import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -27,7 +30,9 @@ import kotlin.coroutines.coroutineContext
  */
 class BackupManager(
     private val vaultRepository: VaultRepository,
-    private val passwordRepository: PasswordRepository
+    private val passwordRepository: PasswordRepository,
+    /** Present in production so creation of an import vault and its credentials commits atomically. */
+    private val database: AppDatabase? = null
 ) {
     companion object {
         const val MIN_BACKUP_PASSWORD_LENGTH = 8
@@ -227,26 +232,32 @@ class BackupManager(
             prepared = prepareJsonImport(backupData)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: VaultLockedException) {
+            throw e
         } catch (e: IllegalArgumentException) {
             return ImportResult(0, 0, 0, listOf(e.message ?: "备份结构无效"))
         } catch (_: Exception) {
             return ImportResult(0, 0, 0, listOf("无法读取备份：密码错误或文件已损坏"))
         }
 
-        val vaultsById = vaultRepository.allOnce().associateBy { it.id }.toMutableMap()
-        for (vault in backupData.vaults) {
-            if (vault.id in vaultsById) continue
-            try {
-                val created = VaultEntity(id = vault.id, name = vault.name, icon = vault.icon)
-                vaultRepository.insertImported(created)
-                vaultsById[vault.id] = created
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Import continues; the candidate-preparation phase already reroutes orphan rows.
+        return importInTransaction {
+            val vaultsById = vaultRepository.allOnce().associateBy { it.id }.toMutableMap()
+            for (vault in backupData.vaults) {
+                if (vault.id in vaultsById) continue
+                try {
+                    val created = VaultEntity(id = vault.id, name = vault.name, icon = vault.icon)
+                    vaultRepository.insertImported(created)
+                    vaultsById[vault.id] = created
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: VaultLockedException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Import continues; the candidate-preparation phase already reroutes orphan rows.
+                }
             }
+            importPrepared(prepared, strategy)
         }
-        return importPrepared(prepared, strategy)
     }
 
     // ---- CSV export -------------------------------------------------------
@@ -286,6 +297,8 @@ class BackupManager(
             prepareCsvImport(content, targetVaultId)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: VaultLockedException) {
+            throw e
         } catch (e: IllegalArgumentException) {
             return ImportResult(0, 0, 0, listOf(e.message ?: "CSV 文件无效"))
         } catch (_: Exception) {
@@ -294,14 +307,16 @@ class BackupManager(
         if (prepared.candidates.isEmpty()) {
             return ImportResult(0, 0, prepared.invalidItems, listOf("没有可导入的有效项目"))
         }
-        val effectiveTargetVaultId = resolveCsvImportVaultId(
-            prepared = prepared,
-            requestedVaultId = targetVaultId
-        )
-        val normalized = prepared.copy(
-            candidates = prepared.candidates.map { it.copy(vaultId = effectiveTargetVaultId) }
-        )
-        return importPrepared(normalized, strategy)
+        return importInTransaction {
+            val effectiveTargetVaultId = resolveCsvImportVaultId(
+                prepared = prepared,
+                requestedVaultId = targetVaultId
+            )
+            val normalized = prepared.copy(
+                candidates = prepared.candidates.map { it.copy(vaultId = effectiveTargetVaultId) }
+            )
+            importPrepared(normalized, strategy)
+        }
     }
 
     // ---- Import planning ---------------------------------------------------
@@ -554,6 +569,8 @@ class BackupManager(
                                         indexExisting(seen, candidate.toDecrypted(existing.id))
                                     } catch (e: CancellationException) {
                                         throw e
+                                    } catch (e: VaultLockedException) {
+                                        throw e
                                     } catch (_: Exception) {
                                         failed++
                                         errors += "部分项目覆盖失败"
@@ -571,6 +588,8 @@ class BackupManager(
                     }
                 }
             } catch (e: CancellationException) {
+                throw e
+            } catch (e: VaultLockedException) {
                 throw e
             } catch (_: Exception) {
                 failed += vaultCandidates.size
@@ -599,6 +618,8 @@ class BackupManager(
                 inserted += passwordRepository.importDecrypted(vaultId, batch)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: VaultLockedException) {
+                throw e
             } catch (_: Exception) {
                 // Room's batch insert is transactional: retry this small batch one by one so a
                 // malformed external row cannot discard its valid neighbours.
@@ -607,6 +628,8 @@ class BackupManager(
                         passwordRepository.importDecrypted(vaultId, listOf(item))
                         inserted++
                     } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: VaultLockedException) {
                         throw e
                     } catch (_: Exception) {
                         // Counted by the caller; never expose imported credential content here.
@@ -644,6 +667,14 @@ class BackupManager(
         }
         return vaultRepository.create("已导入", "lock").id
     }
+
+    /**
+     * The production app supplies Room so import cancellation or an uncaught write failure rolls
+     * back both the newly-created vault and its credential writes. JVM tests use in-memory DAOs
+     * and intentionally exercise the same import logic without a Room database.
+     */
+    private suspend fun <T> importInTransaction(block: suspend () -> T): T =
+        database?.withTransaction { block() } ?: block()
 
     /**
      * The JSON-backup UI is exclusively for encrypted Offline Vault wrappers. Keeping the wrapper
@@ -792,45 +823,22 @@ class BackupManager(
     private fun isSameCredential(existing: DecryptedPassword, candidate: ImportCandidate): Boolean {
         val existingUser = existing.username.normalizedUser()
         val candidateUser = candidate.username.normalizedUser()
-        if (existingUser.isNotEmpty() && candidateUser.isNotEmpty() && existingUser != candidateUser) return false
+        if (existingUser != candidateUser) return false
 
         val existingHost = comparableHost(existing.url)
         val candidateHost = comparableHost(candidate.url)
-        if (existingHost != null && candidateHost != null &&
-            existingHost == candidateHost &&
-            (existingUser.isNotEmpty() || candidateUser.isNotEmpty())
-        ) {
-            return true
-        }
-
-        val existingTitle = existing.title.normalizedTitle()
-        val candidateTitle = candidate.title.normalizedTitle()
-        if (existingTitle.isNotEmpty() && candidateTitle.isNotEmpty()) {
-            if (existingTitle == candidateTitle) return true
-            if (existingTitle.contains(candidateTitle) || candidateTitle.contains(existingTitle)) return true
-        }
-
-        val sharedTokens = identifierTokens(existing.title, existing.url)
-            .intersect(identifierTokens(candidate.title, candidate.url))
-        if (sharedTokens.isNotEmpty() && (existingUser.isNotEmpty() || candidateUser.isNotEmpty())) return true
-
-        return existingUser.isEmpty() && candidateUser.isEmpty() &&
-            existing.password.trim().isNotEmpty() &&
+        if (existingHost == null || candidateHost == null || existingHost != candidateHost) return false
+        if (existingUser.isNotEmpty()) return true
+        return existing.password.trim().isNotEmpty() &&
             existing.password.trim() == candidate.password.trim() &&
-            existingHost != null &&
-            existingHost == candidateHost
+            candidate.password.trim().isNotEmpty()
     }
 
     private fun buildMatchKeys(title: String, username: String, password: String, url: String): Set<String> {
         val user = username.normalizedUser()
         val host = comparableHost(url)
-        val normalizedTitle = title.normalizedTitle()
-        val tokens = identifierTokens(title, url)
         return buildSet {
             if (user.isNotEmpty() && host != null) add("host:$host|user:$user")
-            if (user.isNotEmpty() && normalizedTitle.isNotEmpty()) add("title:$normalizedTitle|user:$user")
-            if (user.isNotEmpty()) tokens.forEach { add("token:$it|user:$user") }
-            if (user.isEmpty() && host != null && normalizedTitle.isNotEmpty()) add("host:$host|title:$normalizedTitle")
             if (user.isEmpty() && host != null && password.trim().isNotEmpty()) add("host:$host|empty-user")
         }
     }
@@ -847,24 +855,6 @@ class BackupManager(
     }
 
     private fun String.normalizedUser(): String = trim().lowercase(Locale.ROOT)
-
-    private fun String.normalizedTitle(): String =
-        lowercase(Locale.ROOT)
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
-            .trim()
-            .replace(Regex("\\s+"), " ")
-
-    private fun identifierTokens(title: String, url: String): Set<String> {
-        val stopWords = setOf("www", "com", "net", "org", "app", "login", "secure", "account", "online", "site", "web")
-        val titleTokens = title.normalizedTitle()
-            .split(' ')
-            .filter { it.length >= 3 && it !in stopWords }
-        val hostTokens = comparableHost(url)
-            ?.split('.', '-')
-            ?.filter { it.length >= 3 && it !in stopWords }
-            .orEmpty()
-        return (titleTokens + hostTokens).toSet()
-    }
 
     private fun isValidImportItem(item: BackupItem): Boolean = try {
         item.vaultId.isNotBlank() &&

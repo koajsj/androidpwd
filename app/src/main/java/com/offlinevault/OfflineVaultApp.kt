@@ -67,9 +67,32 @@ class OfflineVaultApp : Application() {
                     ).show()
                 }
                 val integrity = withContext(Dispatchers.IO) {
-                    runCatching { container.integrityChecker.inspect() }.getOrNull()
+                    try {
+                        Result.success(container.integrityChecker.inspect())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
                 }
-                if (integrity?.databaseHealthy == false) {
+                // The activity may have been backgrounded (and the session locked) while the
+                // integrity check was running; nothing left to protect.
+                if (!SessionManager.isUnlocked) {
+                    return@collect
+                }
+                val report = integrity.getOrNull()
+                if (integrity.isFailure) {
+                    // Fail closed: an integrity check that could not complete is NOT evidence the
+                    // database is healthy. Lock rather than continue against an unverified vault.
+                    SessionManager.lock()
+                    Toast.makeText(
+                        this@OfflineVaultApp,
+                        "无法完成密码库结构校验，已锁定以保护数据。请重试解锁或使用加密备份恢复。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@collect
+                }
+                if (report?.databaseHealthy == false) {
                     SessionManager.lock()
                     Toast.makeText(
                         this@OfflineVaultApp,
@@ -78,7 +101,7 @@ class OfflineVaultApp : Application() {
                     ).show()
                     return@collect
                 }
-                if (integrity?.hasEncryptedDataIssues == true) {
+                if (report?.hasEncryptedDataIssues == true) {
                     Toast.makeText(
                         this@OfflineVaultApp,
                         "发现未完成迁移、损坏或被修改的密码记录，已隔离异常项目。",

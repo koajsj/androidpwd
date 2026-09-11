@@ -24,5 +24,5 @@ class AppContainer(context: Context) {
 
     val vaultRepository = VaultRepository(database.vaultDao())
     val passwordRepository = PasswordRepository(database.passwordDao())
-    val backupManager = BackupManager(vaultRepository, passwordRepository)
+    val backupManager = BackupManager(vaultRepository, passwordRepository, database)
 }

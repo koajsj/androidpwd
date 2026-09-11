@@ -6,6 +6,7 @@ import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.PasswordHistoryItem
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.security.SessionManager
+import com.offlinevault.security.VaultLockedException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,9 +41,11 @@ class PasswordDetailViewModel(
             else passwordRepository.observe(pid).map { entity ->
                 entity?.let {
                     try {
-                        passwordRepository.decrypt(it)
+                        passwordRepository.decryptForActiveSession(it)
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (_: VaultLockedException) {
+                        null
                     } catch (e: Exception) {
                         _error.value = "这条凭据已损坏，无法解密。"
                         null
@@ -50,7 +53,9 @@ class PasswordDetailViewModel(
                 }
             }.catch { error ->
                 if (error is CancellationException) throw error
-                _error.value = "这条凭据已损坏，无法解密。"
+                if (error !is VaultLockedException) {
+                    _error.value = "这条凭据已损坏，无法解密。"
+                }
                 emit(null)
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)

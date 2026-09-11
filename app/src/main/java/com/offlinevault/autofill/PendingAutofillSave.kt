@@ -7,7 +7,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 
 /**
- * Holds one credential captured by the autofill Save flow while the vault is locked.
+ * Holds credentials captured by the autofill Save flow while the vault is locked.
  *
  * Only Keystore-encrypted bytes live in process memory between callbacks. They are consumed and
  * encrypted into the vault after the next unlock. If the process dies before then, the pending
@@ -19,13 +19,14 @@ object PendingAutofillSave {
 
     private const val MAX_PENDING_AGE_MS = 5 * 60 * 1000L
     private const val MAX_FIELD_BYTES = 64 * 1024
+    private const val MAX_PENDING_CAPTURES = 4
 
     private data class PendingCapture(
         val encryptedCapture: ByteArray,
         val createdAt: Long = System.currentTimeMillis()
     )
 
-    private var pending: PendingCapture? = null
+    private val pending = ArrayDeque<PendingCapture>()
 
     /**
      * Queues one captured credential for the immediate post-unlock save. Failure to use the
@@ -47,17 +48,18 @@ object PendingAutofillSave {
             return false
         }
         plain.fill(0)
-        pending?.encryptedCapture?.fill(0)
-        pending = PendingCapture(encrypted)
+        if (pending.size >= MAX_PENDING_CAPTURES) {
+            encrypted.fill(0)
+            return false
+        }
+        pending.addLast(PendingCapture(encrypted))
         return true
     }
 
-    /** Returns the pending capture (if any) and clears it. */
+    /** Returns the oldest pending capture (if any) and removes it. */
     @Synchronized
     fun consume(): Capture? {
-        val current = pending
-        pending = null
-        if (current == null) return null
+        val current = pending.removeFirstOrNull() ?: return null
         val expired = System.currentTimeMillis() - current.createdAt > MAX_PENDING_AGE_MS
         if (expired) {
             current.encryptedCapture.fill(0)

@@ -129,6 +129,23 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
+    /** Replaces master wrapping material and clears the recovery throttle in one DataStore edit. */
+    suspend fun updateMasterMaterialAndResetFailures(
+        masterSalt: String,
+        masterWrappedDek: String,
+        masterIterations: Int,
+        masterKdfVersion: String
+    ) {
+        context.dataStore.edit {
+            it[Keys.MASTER_SALT] = masterSalt
+            it[Keys.MASTER_WRAPPED_DEK] = masterWrappedDek
+            it[Keys.MASTER_ITERATIONS] = masterIterations
+            it[Keys.MASTER_KDF_VERSION] = masterKdfVersion
+            it[Keys.FAILED_ATTEMPTS] = 0
+            it[Keys.LAST_FAILED_AT] = 0L
+        }
+    }
+
     suspend fun updateMasterWrappedDekIfUnchanged(expected: String, replacement: String) {
         context.dataStore.edit {
             if (it[Keys.MASTER_WRAPPED_DEK] == expected) {

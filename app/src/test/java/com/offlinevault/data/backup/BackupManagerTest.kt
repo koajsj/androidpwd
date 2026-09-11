@@ -87,6 +87,33 @@ class BackupManagerTest {
         assertEquals(1, passwordDao.getPasswordsByVaultIdOnce(vault.id).size)
     }
 
+    @Test fun sameTitleAndUsernameOnDifferentHostsAreNotDuplicates() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        passwordRepository.save(
+            id = null,
+            vaultId = vault.id,
+            title = "Google",
+            username = "user@example.com",
+            password = "first-password",
+            url = "https://accounts.google.com",
+            tags = emptyList(),
+            note = ""
+        )
+        val csv = """
+            name,url,username,password
+            Google,https://mail.google.com,user@example.com,second-password
+        """.trimIndent()
+
+        val preview = manager.previewChromeCsv(csv, vault.id)
+        assertEquals(1, preview.newItems)
+        assertEquals(0, preview.duplicateItems)
+
+        val result = manager.importChromeCsv(csv, vault.id, ImportConflictStrategy.SKIP)
+        assertEquals(1, result.imported)
+        assertEquals(0, result.skippedDuplicates)
+        assertEquals(2, passwordDao.getPasswordsByVaultIdOnce(vault.id).size)
+    }
+
     @Test fun encryptedJsonImportRejectsPlainJsonAndWrongPassword() = runBlocking {
         val plainJson = """{"vaults":[],"items":[]}"""
 
@@ -174,6 +201,38 @@ class BackupManagerTest {
         assertEquals(1, passwordDao.getAllIncludingTrashedOnce().size)
     }
 
+    @Test fun lockedSessionRejectsAllSensitiveReads() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val id = passwordRepository.save(
+            id = null,
+            vaultId = vault.id,
+            title = "Example",
+            username = "user",
+            password = "password",
+            url = "https://example.com",
+            tags = emptyList(),
+            note = "private"
+        )
+        val encrypted = requireNotNull(passwordDao.getById(id))
+        SessionManager.lock()
+
+        val reads = listOf<suspend () -> Unit>(
+            { passwordRepository.getDecrypted(id) },
+            { passwordRepository.decryptForActiveSession(encrypted) },
+            { passwordRepository.history(id) },
+            { passwordRepository.allDecryptedSkippingCorrupt() },
+            { passwordRepository.healthCandidatesSkippingCorrupt() },
+            { passwordRepository.decryptedForVault(vault.id) },
+            { passwordRepository.decryptedMatching { true } },
+            { vaultRepository.getById(vault.id) },
+            { vaultRepository.allOnce() },
+            { manager.buildEncryptedJsonBackup("backup-pass") }
+        )
+        reads.forEach { read ->
+            assertThrows(IllegalStateException::class.java) { runBlocking { read() } }
+        }
+    }
+
     @Test fun legacyMetadataMigratesInPlaceBeforeStrictReads() = runBlocking {
         val vault = vaultRepository.create("个人", "lock")
         val id = "legacy-credential"
@@ -218,6 +277,26 @@ class BackupManagerTest {
         assertEquals(0, result.skippedDuplicates)
         assertEquals(2, result.imported + result.skippedDuplicates + result.updated + result.failed)
         assertEquals(1, passwordDao.getPasswordsByVaultIdOnce(vault.id).size)
+    }
+
+    @Test fun repeatedDeleteDoesNotExtendRecycleBinRetention() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val id = passwordRepository.save(
+            id = null,
+            vaultId = vault.id,
+            title = "Example",
+            username = "user",
+            password = "password",
+            url = "https://example.com",
+            tags = emptyList(),
+            note = ""
+        )
+
+        passwordRepository.deleteById(id)
+        val firstDeletedAt = requireNotNull(passwordDao.getById(id)).deletedAt
+        passwordRepository.deleteById(id)
+
+        assertEquals(firstDeletedAt, requireNotNull(passwordDao.getById(id)).deletedAt)
     }
 
     private class InMemoryVaultDao : VaultDao {
@@ -284,20 +363,27 @@ class BackupManagerTest {
         override fun observeTrashed(): Flow<List<PasswordEntity>> =
             rows.map { list -> list.filter { it.deletedAt > 0L } }
 
-        override suspend fun softDelete(id: String, deletedAt: Long) {
-            rows.value = rows.value.map { if (it.id == id) it.copy(deletedAt = deletedAt) else it }
+        override suspend fun softDelete(id: String, deletedAt: Long): Int {
+            val target = rows.value.firstOrNull { it.id == id && it.deletedAt == 0L } ?: return 0
+            rows.value = rows.value.map { if (it.id == id) target.copy(deletedAt = deletedAt) else it }
+            return 1
         }
 
-        override suspend fun softDeleteMany(ids: List<String>, deletedAt: Long) {
-            val selected = ids.toSet()
+        override suspend fun softDeleteMany(ids: List<String>, deletedAt: Long): Int {
+            val selected = rows.value
+                .filter { it.id in ids && it.deletedAt == 0L }
+                .mapTo(hashSetOf()) { it.id }
             rows.value = rows.value.map { if (it.id in selected) it.copy(deletedAt = deletedAt) else it }
+            return selected.size
         }
 
         override suspend fun setFavorite(id: String, favorite: Boolean) {
             rows.value = rows.value.map { if (it.id == id) it.copy(favorite = favorite) else it }
         }
 
-        override suspend fun restore(id: String) = softDelete(id, 0L)
+        override suspend fun restore(id: String) {
+            rows.value = rows.value.map { if (it.id == id) it.copy(deletedAt = 0L) else it }
+        }
 
         override suspend fun purgeTrashedOlderThan(cutoff: Long) {
             rows.value = rows.value.filterNot { it.deletedAt > 0L && it.deletedAt < cutoff }

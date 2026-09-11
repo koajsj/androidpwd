@@ -31,46 +31,48 @@ class VaultIntegrityChecker(private val database: AppDatabase) {
         }.getOrDefault(false)
         if (!databaseHealthy) return VaultIntegrityReport(false, 0, 0, 0)
 
-        SessionManager.requireKey()
-        val vaults = database.vaultDao().getAllVaultsOnce()
-        val credentials = database.passwordDao().getAllIncludingTrashedOnce()
-        val legacyMetadata = vaults.count { EncryptedField.requiresMetadataMigration(it.name) } +
-            credentials.count(::hasLegacyMetadata)
-        val invalidVaults = vaults.count { vault ->
-            runCatching {
-                EncryptedField.decrypt(vault.name, "vault:${vault.id}:name")
-            }.isFailure
+        return SessionManager.withActiveSession {
+            val vaults = database.vaultDao().getAllVaultsOnce()
+            val credentials = database.passwordDao().getAllIncludingTrashedOnce()
+            val legacyMetadata = vaults.count { EncryptedField.requiresMetadataMigration(it.name) } +
+                credentials.count(::hasLegacyMetadata)
+            val invalidVaults = vaults.count { vault ->
+                runCatching {
+                    EncryptedField.decrypt(vault.name, "vault:${vault.id}:name")
+                }.isFailure
+            }
+            val invalidCredentials = credentials.count { row ->
+                runCatching {
+                    EncryptedField.decrypt(row.title, credentialContext(row.id, "title"))
+                    EncryptedField.decrypt(row.username, credentialContext(row.id, "username"))
+                    EncryptedField.decrypt(row.url, credentialContext(row.id, "url"))
+                    EncryptedField.decrypt(row.tags, credentialContext(row.id, "tags"))
+                    EncryptedField.decryptSecret(
+                        row.encryptedPassword,
+                        credentialContext(row.id, "password")
+                    )
+                    if (row.encryptedNote.isNotBlank()) {
+                        EncryptedField.decryptSecret(row.encryptedNote, credentialContext(row.id, "note"))
+                    }
+                }.isFailure
+            }
+            val invalidHistory = database.passwordDao().allHistoryOnce().count { row ->
+                runCatching {
+                    EncryptedField.decryptHistorySecret(
+                        row.encryptedPassword,
+                        row.passwordId,
+                        row.id
+                    )
+                }.isFailure
+            }
+            VaultIntegrityReport(
+                databaseHealthy = true,
+                invalidVaultMetadata = invalidVaults,
+                invalidCredentials = invalidCredentials,
+                invalidHistoryEntries = invalidHistory,
+                legacyMetadataEntries = legacyMetadata
+            )
         }
-        val invalidCredentials = credentials.count { row ->
-            runCatching {
-                EncryptedField.decrypt(row.title, credentialContext(row.id, "title"))
-                EncryptedField.decrypt(row.username, credentialContext(row.id, "username"))
-                EncryptedField.decrypt(row.url, credentialContext(row.id, "url"))
-                EncryptedField.decrypt(row.tags, credentialContext(row.id, "tags"))
-                EncryptedField.decryptSecret(
-                    row.encryptedPassword,
-                    credentialContext(row.id, "password")
-                )
-                if (row.encryptedNote.isNotBlank()) {
-                    EncryptedField.decryptSecret(row.encryptedNote, credentialContext(row.id, "note"))
-                }
-            }.isFailure
-        }
-        val invalidHistory = database.passwordDao().allHistoryOnce().count { row ->
-            runCatching {
-                EncryptedField.decryptSecret(
-                    row.encryptedPassword,
-                    credentialContext(row.passwordId, "password")
-                )
-            }.isFailure
-        }
-        return VaultIntegrityReport(
-            databaseHealthy = true,
-            invalidVaultMetadata = invalidVaults,
-            invalidCredentials = invalidCredentials,
-            invalidHistoryEntries = invalidHistory,
-            legacyMetadataEntries = legacyMetadata
-        )
     }
 
     private fun credentialContext(id: String, field: String): String = "credential:$id:$field"

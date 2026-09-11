@@ -9,6 +9,9 @@ package com.offlinevault.security
 object EncryptedField {
     private const val PREFIX_V1 = "enc:v1:"
     private const val PREFIX_V2 = "enc:v2:"
+    // Password-history rows used to reuse the live credential envelope. v3 gives every history
+    // row its own authenticated context while retaining a distinguishable legacy fallback.
+    private const val PREFIX_V3_HISTORY = "enc:v3:"
     private const val AAD_DOMAIN = "offline-vault-field:"
 
     fun isContextBound(value: String): Boolean = value.startsWith(PREFIX_V2)
@@ -72,10 +75,49 @@ object EncryptedField {
     fun migrateSecret(value: String, context: String): String =
         if (isContextBound(value)) value else encryptSecret(decryptSecret(value, context), context)
 
+    /**
+     * Password history is a separate record from the current credential. Keep its envelope
+     * versioned so older history values, which reused the credential-password context, remain
+     * readable only long enough to be migrated after a successful unlock.
+     */
+    fun encryptHistorySecret(value: String, credentialId: String, historyId: String): String =
+        PREFIX_V3_HISTORY + CryptoManager.encryptString(
+            SessionManager.requireKey(),
+            value,
+            aad(historyContext(credentialId, historyId))
+        )
+
+    fun decryptHistorySecret(value: String, credentialId: String, historyId: String): String =
+        if (value.startsWith(PREFIX_V3_HISTORY)) {
+            CryptoManager.decryptString(
+                SessionManager.requireKey(),
+                value.removePrefix(PREFIX_V3_HISTORY),
+                aad(historyContext(credentialId, historyId))
+            )
+        } else {
+            // v1/v2 history copied the live credential's password envelope. Do not use this
+            // fallback for v3: a v3 row must authenticate against its own immutable history id.
+            decryptSecret(value, "credential:$credentialId:password")
+        }
+
+    fun migrateHistorySecret(value: String, credentialId: String, historyId: String): String =
+        if (value.startsWith(PREFIX_V3_HISTORY)) value else
+            encryptHistorySecret(
+                decryptHistorySecret(value, credentialId, historyId),
+                credentialId,
+                historyId
+            )
+
     private fun aad(context: String): String {
         require(context.isNotBlank()) { "Encrypted field context is required" }
         require(context.length <= 512) { "Encrypted field context is too large" }
         return AAD_DOMAIN + context
+    }
+
+    private fun historyContext(credentialId: String, historyId: String): String {
+        require(credentialId.isNotBlank()) { "Credential id is required" }
+        require(historyId.isNotBlank()) { "History id is required" }
+        return "history:$historyId:credential:$credentialId:password"
     }
 }
 

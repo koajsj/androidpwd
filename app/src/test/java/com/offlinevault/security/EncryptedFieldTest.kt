@@ -54,4 +54,48 @@ class EncryptedFieldTest {
             SessionManager.lock()
         }
     }
+
+    @Test
+    fun historySecretsAreBoundToTheirOwnHistoryRecord() {
+        val key = CryptoManager.newDataEncryptionKey()
+        SessionManager.unlock(key)
+        try {
+            val encrypted = EncryptedField.encryptHistorySecret(
+                "previous-password",
+                credentialId = "credential-1",
+                historyId = "history-1"
+            )
+            assertEquals(
+                "previous-password",
+                EncryptedField.decryptHistorySecret(encrypted, "credential-1", "history-1")
+            )
+            assertThrows(Exception::class.java) {
+                EncryptedField.decryptHistorySecret(encrypted, "credential-1", "history-2")
+            }
+        } finally {
+            SessionManager.lock()
+        }
+    }
+
+    @Test
+    fun legacyHistoryEnvelopeMigratesWithoutChangingItsPassword() {
+        val key = CryptoManager.newDataEncryptionKey()
+        SessionManager.unlock(key)
+        try {
+            // Released history rows copied the live credential-password envelope.
+            val legacy = EncryptedField.encryptSecret("old-password", "credential:1:password")
+            val migrated = EncryptedField.migrateHistorySecret(
+                legacy,
+                credentialId = "1",
+                historyId = "history-1"
+            )
+            assertTrue(migrated.startsWith("enc:v3:"))
+            assertEquals(
+                "old-password",
+                EncryptedField.decryptHistorySecret(migrated, "1", "history-1")
+            )
+        } finally {
+            SessionManager.lock()
+        }
+    }
 }

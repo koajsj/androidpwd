@@ -65,11 +65,12 @@ interface PasswordDao {
     @Query("SELECT * FROM passwords WHERE deletedAt > 0 ORDER BY deletedAt DESC")
     fun observeTrashed(): Flow<List<PasswordEntity>>
 
-    @Query("UPDATE passwords SET deletedAt = :deletedAt WHERE id = :id")
-    suspend fun softDelete(id: String, deletedAt: Long)
+    /** Only active credentials may enter the recycle bin; a repeated delete must not extend retention. */
+    @Query("UPDATE passwords SET deletedAt = :deletedAt WHERE id = :id AND deletedAt = 0")
+    suspend fun softDelete(id: String, deletedAt: Long): Int
 
-    @Query("UPDATE passwords SET deletedAt = :deletedAt WHERE id IN (:ids)")
-    suspend fun softDeleteMany(ids: List<String>, deletedAt: Long)
+    @Query("UPDATE passwords SET deletedAt = :deletedAt WHERE id IN (:ids) AND deletedAt = 0")
+    suspend fun softDeleteMany(ids: List<String>, deletedAt: Long): Int
 
     @Query("UPDATE passwords SET favorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: String, favorite: Boolean)

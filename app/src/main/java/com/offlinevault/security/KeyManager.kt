@@ -190,8 +190,7 @@ class KeyManager(
         // Re-wrap the recovered DEK under a fresh master password.
         val dek = secretKeyFromBytes(dekBytes)
         return try {
-            rewrapMaster(dek, newMasterPassword)
-            prefs.resetFailures()
+            rewrapMaster(dek, newMasterPassword, resetFailures = true)
             // Recovery is never an unlock mechanism. The normal UI calls this while locked, but
             // enforce that invariant here as well so a future caller cannot keep an old session
             // alive after replacing the master credential.
@@ -246,8 +245,7 @@ class KeyManager(
 
             val dek = secretKeyFromBytes(dekBytes)
             return try {
-                rewrapMaster(dek, newMasterPassword)
-                prefs.resetFailures()
+                rewrapMaster(dek, newMasterPassword, resetFailures = true)
                 // A valid recovery phrase may reset the master credential only; it must not
                 // become a second, implicit daily-unlock path.
                 SessionManager.lock()
@@ -290,8 +288,7 @@ class KeyManager(
         }
         val dek = secretKeyFromBytes(dekBytes)
         return try {
-            rewrapMaster(dek, newPassword)
-            prefs.resetFailures()
+            rewrapMaster(dek, newPassword, resetFailures = true)
             UnlockResult.Success
         } finally {
             CryptoManager.destroyKey(dek)
@@ -336,24 +333,25 @@ class KeyManager(
         require(answer.trim().length >= MIN_NEW_RECOVERY_ANSWER_LENGTH) {
             "安全问题答案至少需要 $MIN_NEW_RECOVERY_ANSWER_LENGTH 个字符"
         }
-        val dek = SessionManager.requireKey()
-        val salt = CryptoManager.newSalt()
-        try {
-            val kdf = KdfVersions.current()
-            val wrapped = wrapDekWithSecret(normalizeAnswer(answer), salt, kdf, dek)
+        SessionManager.withActiveSession {
+            val salt = CryptoManager.newSalt()
             try {
-                prefs.updateRecoveryMaterial(
-                    recoverySalt = CryptoManager.encode(salt),
-                    recoveryWrappedDek = encodeWrappedDek(wrapped),
-                    recoveryQuestion = question,
-                    recoveryIterations = kdf.iterations,
-                    recoveryKdfVersion = kdf.version
-                )
+                val kdf = KdfVersions.current()
+                val wrapped = wrapDekWithSecret(normalizeAnswer(answer), salt, kdf, SessionManager.requireKey())
+                try {
+                    prefs.updateRecoveryMaterial(
+                        recoverySalt = CryptoManager.encode(salt),
+                        recoveryWrappedDek = encodeWrappedDek(wrapped),
+                        recoveryQuestion = question,
+                        recoveryIterations = kdf.iterations,
+                        recoveryKdfVersion = kdf.version
+                    )
+                } finally {
+                    wrapped.fill(0)
+                }
             } finally {
-                wrapped.fill(0)
+                salt.fill(0)
             }
-        } finally {
-            salt.fill(0)
         }
     }
 
@@ -386,12 +384,14 @@ class KeyManager(
         ) {
             return UnlockResult.Error("请先验证当前主密码")
         }
-        val dek = try {
-            SessionManager.requireKey()
+        return try {
+            SessionManager.withActiveSession {
+                SessionManager.requireActiveSession(authorization.sessionGeneration)
+                updateMnemonicRecoveryForDek(SessionManager.requireKey(), mnemonicPhrase)
+            }
         } catch (_: Exception) {
-            return UnlockResult.Error("密码库已锁定，请重新解锁")
+            UnlockResult.Error("密码库已锁定，请重新解锁")
         }
-        return updateMnemonicRecoveryForDek(dek, mnemonicPhrase)
     }
 
     private suspend fun updateMnemonicRecoveryForDek(
@@ -442,18 +442,31 @@ class KeyManager(
         return UnlockResult.Success
     }
 
-    private suspend fun rewrapMaster(dek: SecretKey, newPassword: String) {
+    private suspend fun rewrapMaster(
+        dek: SecretKey,
+        newPassword: String,
+        resetFailures: Boolean = false
+    ) {
         val salt = CryptoManager.newSalt()
         try {
             val kdf = KdfVersions.current()
             val wrapped = wrapDekWithSecret(newPassword, salt, kdf, dek)
             try {
-                prefs.updateMasterMaterial(
-                    masterSalt = CryptoManager.encode(salt),
-                    masterWrappedDek = encodeWrappedDek(wrapped),
-                    masterIterations = kdf.iterations,
-                    masterKdfVersion = kdf.version
-                )
+                if (resetFailures) {
+                    prefs.updateMasterMaterialAndResetFailures(
+                        masterSalt = CryptoManager.encode(salt),
+                        masterWrappedDek = encodeWrappedDek(wrapped),
+                        masterIterations = kdf.iterations,
+                        masterKdfVersion = kdf.version
+                    )
+                } else {
+                    prefs.updateMasterMaterial(
+                        masterSalt = CryptoManager.encode(salt),
+                        masterWrappedDek = encodeWrappedDek(wrapped),
+                        masterIterations = kdf.iterations,
+                        masterKdfVersion = kdf.version
+                    )
+                }
             } finally {
                 wrapped.fill(0)
             }
@@ -539,21 +552,22 @@ class KeyManager(
      * [authenticatedCipher] must already have passed through BiometricPrompt in ENCRYPT mode.
      */
     suspend fun storeBiometricWrappedDek(authenticatedCipher: Cipher) {
-        val dek = SessionManager.requireKey()
-        val dekBytes = dek.encoded
-        val ciphertext = try {
-            authenticatedCipher.doFinal(dekBytes)
-        } finally {
-            dekBytes.fill(0)
-        }
-        val iv = authenticatedCipher.iv
-        val blob = KeystoreManager.joinIv(iv, ciphertext)
-        try {
-            prefs.setBiometric(enabled = true, wrappedDek = CryptoManager.encode(blob))
-        } finally {
-            iv.fill(0)
-            ciphertext.fill(0)
-            blob.fill(0)
+        SessionManager.withActiveSession {
+            val dekBytes = SessionManager.requireKey().encoded
+            val ciphertext = try {
+                authenticatedCipher.doFinal(dekBytes)
+            } finally {
+                dekBytes.fill(0)
+            }
+            val iv = authenticatedCipher.iv
+            val blob = KeystoreManager.joinIv(iv, ciphertext)
+            try {
+                prefs.setBiometric(enabled = true, wrappedDek = CryptoManager.encode(blob))
+            } finally {
+                iv.fill(0)
+                ciphertext.fill(0)
+                blob.fill(0)
+            }
         }
     }
 
@@ -613,8 +627,6 @@ class KeyManager(
             UnlockResult.Error("指纹解锁失败")
         }
     }
-
-    fun lock() = SessionManager.lock()
 
     /**
      * Migrates the short-lived v1 device-protection envelope used by an earlier release.

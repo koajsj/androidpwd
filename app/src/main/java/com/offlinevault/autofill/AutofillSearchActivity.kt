@@ -78,6 +78,7 @@ class AutofillSearchActivity : FragmentActivity() {
     // allow a dataset to be selected after the configured lock deadline.
     @Volatile
     private var autoLockSeconds = 0
+    private var returningDataset = false
 
     companion object {
         private const val EXTRA_USERNAME_ID = "autofill_username_id"
@@ -145,7 +146,7 @@ class AutofillSearchActivity : FragmentActivity() {
         // lock immediately closes the manual picker and clears its decrypted candidates.
         lifecycleScope.launch {
             SessionManager.unlocked.collect { unlocked ->
-                if (!unlocked) cancelForLockedSession()
+                if (!unlocked && !returningDataset) cancelForLockedSession()
             }
         }
 
@@ -158,6 +159,12 @@ class AutofillSearchActivity : FragmentActivity() {
             loadingState.value = true
             errorState.value = null
             lifecycleScope.launch {
+                val expectedGeneration = try {
+                    SessionManager.requireActiveSession()
+                } catch (_: Exception) {
+                    cancelForLockedSession()
+                    return@launch
+                }
                 val result = withContext(Dispatchers.IO) {
                     try {
                         if (includeAll) {
@@ -177,16 +184,29 @@ class AutofillSearchActivity : FragmentActivity() {
                         null
                     }
                 }
-                if (!SessionManager.isUnlocked || isFinishing || isDestroyed) {
-                    cancelForLockedSession()
-                    return@launch
+                val published = try {
+                    // Do not let a result decrypted under a previous session appear after a fast
+                    // lock/unlock transition. State publication is inside the gate as well.
+                    SessionManager.withActiveSession {
+                        SessionManager.requireActiveSession(expectedGeneration)
+                        if (isFinishing || isDestroyed) {
+                            false
+                        } else {
+                            loadingState.value = false
+                            if (result == null) {
+                                errorState.value = "无法读取密码库"
+                            } else {
+                                itemsState.value = result
+                                if (includeAll) allCandidatesLoaded.value = true
+                            }
+                            true
+                        }
+                    }
+                } catch (_: Exception) {
+                    false
                 }
-                loadingState.value = false
-                if (result == null) {
-                    errorState.value = "无法读取密码库"
-                } else {
-                    itemsState.value = result
-                    if (includeAll) allCandidatesLoaded.value = true
+                if (!published) {
+                    cancelForLockedSession()
                 }
             }
         }
@@ -204,21 +224,43 @@ class AutofillSearchActivity : FragmentActivity() {
                     onRequestAllCandidates = { loadCandidates(includeAll = true) },
                     onBack = { finish() },
                     onPick = { item ->
-                        if (!SessionManager.isUnlocked) {
-                            setResult(RESULT_CANCELED)
-                            finish()
-                            return@AutofillSearchScreen
+                        if (returningDataset) return@AutofillSearchScreen
+                        returningDataset = true
+                        lifecycleScope.launch {
+                            val committed = try {
+                                // The Dataset contains plaintext. Keep dataset construction and the
+                                // platform handoff in one active-session operation so lock() cannot
+                                // invalidate the session between a last check and setResult().
+                                SessionManager.withActiveSession {
+                                    val expectedGeneration = SessionManager.requireActiveSession()
+                                    if (isFinishing || isDestroyed) {
+                                        false
+                                    } else {
+                                        val dataset = buildResultDataset(
+                                            item,
+                                            usernameId,
+                                            passwordId,
+                                            targetLabel
+                                        )
+                                        val resultIntent = Intent().putExtra(
+                                            AutofillManager.EXTRA_AUTHENTICATION_RESULT,
+                                            dataset
+                                        )
+                                        SessionManager.requireActiveSession(expectedGeneration)
+                                        setResult(RESULT_OK, resultIntent)
+                                        true
+                                    }
+                                }
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (committed) {
+                                finish()
+                            } else {
+                                returningDataset = false
+                                cancelForLockedSession()
+                            }
                         }
-                        val dataset = try {
-                            buildResultDataset(item, usernameId, passwordId, targetLabel)
-                        } catch (_: Exception) {
-                            setResult(RESULT_CANCELED)
-                            finish()
-                            return@AutofillSearchScreen
-                        }
-                        val resultIntent = Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset)
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
                     }
                 )
             }

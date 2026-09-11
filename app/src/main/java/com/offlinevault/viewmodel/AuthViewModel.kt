@@ -255,8 +255,6 @@ class AuthViewModel(
         }
     }
 
-    fun lock() = keyManager.lock()
-
     private fun refreshRisk() {
         viewModelScope.launch {
             try {
