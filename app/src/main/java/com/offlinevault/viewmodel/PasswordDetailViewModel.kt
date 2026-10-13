@@ -101,18 +101,24 @@ class PasswordDetailViewModel(
         val pid = id.value ?: return
         if (historyJob?.isActive == true) return
         historyJob = viewModelScope.launch {
-            _history.value = try {
-                passwordRepository.history(pid)
+            try {
+                val generation = SessionManager.requireActiveSession()
+                val result = passwordRepository.history(pid)
+                SessionManager.withActiveSessionNow(generation) {
+                    if (id.value == pid) _history.value = result
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                emptyList()
+                _history.value = emptyList()
             }
         }
     }
 
     /** Drops decrypted history from memory when the history view closes. */
     fun clearHistory() {
+        historyJob?.cancel()
+        historyJob = null
         _history.value = emptyList()
     }
 

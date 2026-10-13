@@ -6,11 +6,13 @@ import com.offlinevault.autofill.OriginMatcher
 import com.offlinevault.data.db.AppDatabase
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.data.repository.DecryptedPassword
+import com.offlinevault.data.repository.DatabaseWriteGate
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.KdfVersions
 import com.offlinevault.security.VaultLockedException
+import com.offlinevault.security.SessionManager
 import com.google.gson.stream.JsonWriter
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
@@ -101,7 +103,10 @@ class BackupManager(
 
     // ---- JSON export (encrypted) ------------------------------------------
 
-    suspend fun buildEncryptedJsonBackup(backupPassword: String): String {
+    suspend fun buildEncryptedJsonBackup(backupPassword: String): String =
+        SessionManager.withActiveSession { buildEncryptedJsonBackupInternal(backupPassword) }
+
+    private suspend fun buildEncryptedJsonBackupInternal(backupPassword: String): String {
         require(backupPassword.length >= MIN_BACKUP_PASSWORD_LENGTH) {
             "备份密码至少需要 $MIN_BACKUP_PASSWORD_LENGTH 个字符"
         }
@@ -213,9 +218,9 @@ class BackupManager(
 
     // ---- JSON import -------------------------------------------------------
 
-    suspend fun previewJsonBackup(content: String, backupPassword: String): ImportPreview {
+    suspend fun previewJsonBackup(content: String, backupPassword: String): ImportPreview = SessionManager.withActiveSession {
         val prepared = prepareJsonImport(content, backupPassword)
-        return buildPreview(prepared)
+        buildPreview(prepared)
     }
 
     suspend fun importJsonBackup(
@@ -223,6 +228,7 @@ class BackupManager(
         backupPassword: String,
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     ): ImportResult = importMutex.withLock {
+        val generation = SessionManager.requireActiveSession()
         val backupData: BackupData
         val prepared: PreparedImport
         try {
@@ -241,6 +247,7 @@ class BackupManager(
         }
 
         return importInTransaction {
+            SessionManager.requireActiveSession(generation)
             val vaultsById = vaultRepository.allOnce().associateBy { it.id }.toMutableMap()
             for (vault in backupData.vaults) {
                 if (vault.id in vaultsById) continue
@@ -267,7 +274,7 @@ class BackupManager(
      * name,url,username,password columns (easy to import into Chrome/Edge); otherwise the full
      * format including note and tags is produced.
      */
-    suspend fun buildCsvForVault(vaultId: String, slim: Boolean = false): String {
+    suspend fun buildCsvForVault(vaultId: String, slim: Boolean = false): String = SessionManager.withActiveSession {
         val items = passwordRepository.decryptedForVault(vaultId)
         val sb = StringBuilder()
         val header = if (slim) listOf("name", "url", "username", "password")
@@ -278,14 +285,14 @@ class BackupManager(
             else listOf(item.title, item.url, item.username, item.password, item.note, item.tags.joinToString("|"))
             sb.append(CsvUtils.buildRow(row)).append("\n")
         }
-        return sb.toString()
+        sb.toString()
     }
 
     // ---- CSV import (Chrome / generic) ------------------------------------
 
-    suspend fun previewChromeCsv(content: String, targetVaultId: String): ImportPreview {
+    suspend fun previewChromeCsv(content: String, targetVaultId: String): ImportPreview = SessionManager.withActiveSession {
         val prepared = prepareCsvImport(content, targetVaultId)
-        return buildPreview(prepared)
+        buildPreview(prepared)
     }
 
     suspend fun importChromeCsv(
@@ -293,6 +300,7 @@ class BackupManager(
         targetVaultId: String,
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     ): ImportResult = importMutex.withLock {
+        val generation = SessionManager.requireActiveSession()
         val prepared = try {
             prepareCsvImport(content, targetVaultId)
         } catch (e: CancellationException) {
@@ -308,6 +316,7 @@ class BackupManager(
             return ImportResult(0, 0, prepared.invalidItems, listOf("没有可导入的有效项目"))
         }
         return importInTransaction {
+            SessionManager.requireActiveSession(generation)
             val effectiveTargetVaultId = resolveCsvImportVaultId(
                 prepared = prepared,
                 requestedVaultId = targetVaultId
@@ -424,7 +433,8 @@ class BackupManager(
                 fun at(index: Int) = if (index in row.indices) row[index].trim() else ""
                 val title = at(nameIdx).ifEmpty { at(urlIdx).ifEmpty { "已导入" } }
                 val username = at(userIdx)
-                val password = at(passIdx)
+                // Spaces are significant in credentials, even if other CSV metadata is trimmed.
+                val password = row.getOrNull(passIdx).orEmpty()
                 val url = at(urlIdx)
                 val note = at(noteIdx)
                 val tags = at(tagsIdx).split("|", ",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -674,7 +684,10 @@ class BackupManager(
      * and intentionally exercise the same import logic without a Room database.
      */
     private suspend fun <T> importInTransaction(block: suspend () -> T): T =
-        database?.withTransaction { block() } ?: block()
+        DatabaseWriteGate.withWrite {
+            database?.withTransaction { SessionManager.withActiveSession { block() } }
+                ?: SessionManager.withActiveSession { block() }
+        }
 
     /**
      * The JSON-backup UI is exclusively for encrypted Offline Vault wrappers. Keeping the wrapper

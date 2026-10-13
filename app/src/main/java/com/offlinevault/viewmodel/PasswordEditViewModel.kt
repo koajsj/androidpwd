@@ -78,20 +78,23 @@ class PasswordEditViewModel(
         } else {
             loadJob = viewModelScope.launch {
                 try {
+                    val generation = SessionManager.requireActiveSession()
                     val item = passwordRepository.getDecrypted(passwordId)
                     if (loadedKey != key) return@launch
                     if (item != null) {
-                        setInitialForm(EditFormState(
-                            id = item.id,
-                            vaultId = item.vaultId,
-                            title = item.title,
-                            username = item.username,
-                            password = item.password,
-                            url = item.url,
-                            tags = item.tags.joinToString("\n"),
-                            note = item.note,
-                            isEditing = true
-                        ))
+                        SessionManager.withActiveSessionNow(generation) {
+                            setInitialForm(EditFormState(
+                                id = item.id,
+                                vaultId = item.vaultId,
+                                title = item.title,
+                                username = item.username,
+                                password = item.password,
+                                url = item.url,
+                                tags = item.tags.joinToString("\n"),
+                                note = item.note,
+                                isEditing = true
+                            ))
+                        }
                     } else {
                         _errorMessage.value = "未找到这条密码"
                     }

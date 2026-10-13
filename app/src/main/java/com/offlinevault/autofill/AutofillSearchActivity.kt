@@ -127,6 +127,7 @@ class AutofillSearchActivity : FragmentActivity() {
         val loadingState = mutableStateOf(true)
         val errorState = mutableStateOf<String?>(null)
         val itemsState = mutableStateOf<List<AutofillCandidate>>(emptyList())
+        var candidatesGeneration: Long? = null
         val allCandidatesLoaded = mutableStateOf(false)
 
         fun cancelForLockedSession() {
@@ -137,6 +138,7 @@ class AutofillSearchActivity : FragmentActivity() {
             errorState.value = null
             allCandidatesLoaded.value = false
             itemsState.value = emptyList()
+            candidatesGeneration = null
             setResult(RESULT_CANCELED)
             finish()
         }
@@ -187,8 +189,7 @@ class AutofillSearchActivity : FragmentActivity() {
                 val published = try {
                     // Do not let a result decrypted under a previous session appear after a fast
                     // lock/unlock transition. State publication is inside the gate as well.
-                    SessionManager.withActiveSession {
-                        SessionManager.requireActiveSession(expectedGeneration)
+                    SessionManager.withActiveSessionNow(expectedGeneration) {
                         if (isFinishing || isDestroyed) {
                             false
                         } else {
@@ -197,6 +198,7 @@ class AutofillSearchActivity : FragmentActivity() {
                                 errorState.value = "无法读取密码库"
                             } else {
                                 itemsState.value = result
+                                candidatesGeneration = expectedGeneration
                                 if (includeAll) allCandidatesLoaded.value = true
                             }
                             true
@@ -231,8 +233,9 @@ class AutofillSearchActivity : FragmentActivity() {
                                 // The Dataset contains plaintext. Keep dataset construction and the
                                 // platform handoff in one active-session operation so lock() cannot
                                 // invalidate the session between a last check and setResult().
-                                SessionManager.withActiveSession {
-                                    val expectedGeneration = SessionManager.requireActiveSession()
+                                val expectedGeneration = candidatesGeneration
+                                    ?: throw com.offlinevault.security.VaultLockedException("No active candidates")
+                                SessionManager.withActiveSessionNow(expectedGeneration) {
                                     if (isFinishing || isDestroyed) {
                                         false
                                     } else {

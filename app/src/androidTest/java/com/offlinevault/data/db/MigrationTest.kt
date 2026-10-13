@@ -3,17 +3,28 @@ package com.offlinevault.data.db
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.lifecycle.ViewModelStore
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
+import com.offlinevault.data.backup.BackupManager
+import com.offlinevault.data.dao.PasswordDao
+import com.offlinevault.data.model.PasswordEntity
+import com.offlinevault.security.VaultLockedException
+import com.offlinevault.viewmodel.PasswordDetailViewModel
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -67,6 +78,72 @@ class MigrationTest {
                 SessionManager.lock()
                 context.deleteDatabase(testDb)
             }
+        }
+    }
+
+    @Test
+    fun lockDuringImportRollsBackNewVaultAndPasswords() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        val database = AppDatabase.openForMigrationTest(context, testDb)
+        try {
+            val vaultRepository = VaultRepository(database.vaultDao())
+            val original = vaultRepository.ensureDefault()
+            val dao = object : PasswordDao by database.passwordDao() {
+                override suspend fun insertAll(items: List<PasswordEntity>) {
+                    database.passwordDao().insertAll(items)
+                    SessionManager.lock()
+                }
+            }
+            val manager = BackupManager(vaultRepository, PasswordRepository(dao), database)
+            assertThrows(VaultLockedException::class.java) {
+                runBlocking {
+                    manager.importChromeCsv("name,url,username,password\nExample,https://example.com,user,secret", "")
+                }
+            }
+            assertEquals(listOf(original.id), database.vaultDao().getAllVaultsOnce().map { it.id })
+            assertTrue(database.passwordDao().getAllIncludingTrashedOnce().isEmpty())
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun closingHistoryCancelsAnInflightPlaintextRead() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        val database = AppDatabase.openForMigrationTest(context, testDb)
+        val store = ViewModelStore()
+        try {
+            val vault = VaultRepository(database.vaultDao()).ensureDefault()
+            val repository = PasswordRepository(database.passwordDao())
+            val id = repository.save(null, vault.id, "Example", "user", "old-secret", "", emptyList(), "")
+            repository.save(id, vault.id, "Example", "user", "new-secret", "", emptyList(), "")
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<Unit>()
+            val delayed = object : PasswordDao by database.passwordDao() {
+                override suspend fun historyForOnce(passwordId: String) = try {
+                    entered.complete(Unit)
+                    release.await()
+                    database.passwordDao().historyForOnce(passwordId)
+                } finally {
+                    finished.complete(Unit)
+                }
+            }
+            val viewModel = withContext(Dispatchers.Main) {
+                PasswordDetailViewModel(PasswordRepository(delayed)).also {
+                    store.put("detail", it)
+                    it.load(id)
+                    it.loadHistory()
+                }
+            }
+            withTimeout(2_000) { entered.await() }
+            withContext(Dispatchers.Main) { viewModel.clearHistory() }
+            release.complete(Unit)
+            withTimeout(2_000) { finished.await() }
+            withContext(Dispatchers.Main) { assertTrue(viewModel.history.value.isEmpty()) }
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            database.close()
         }
     }
 

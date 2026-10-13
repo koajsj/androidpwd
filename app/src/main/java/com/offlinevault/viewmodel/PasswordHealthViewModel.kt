@@ -61,8 +61,11 @@ class PasswordHealthViewModel(
         _state.value = UiState(loading = true)
         loadJob = viewModelScope.launch {
             try {
+                val generation = SessionManager.requireActiveSession()
                 val report = withContext(Dispatchers.Default) { buildReport() }
-                _state.value = UiState(loading = false, report = report)
+                SessionManager.withActiveSessionNow(generation) {
+                    _state.value = UiState(loading = false, report = report)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

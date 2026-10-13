@@ -13,6 +13,7 @@ import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -37,6 +38,28 @@ class BackupManagerTest {
 
     @After fun tearDown() {
         SessionManager.lock()
+    }
+
+    @Test fun detailObservationCanBeDecryptedWithoutDoubleDecryptingMetadata() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val id = passwordRepository.save(null, vault.id, "标题", "user", "secret",
+            "https://example.com", listOf("工作"), "note")
+        val observed = requireNotNull(passwordRepository.observe(id).first())
+        val detail = passwordRepository.decryptForActiveSession(observed)
+        assertEquals("标题", detail.title)
+        assertEquals("user", detail.username)
+        assertEquals("secret", detail.password)
+        assertEquals("note", detail.note)
+        SessionManager.lock()
+        assertEquals(null, passwordRepository.observe(id).first())
+    }
+
+    @Test fun csvImportPreservesSignificantPasswordWhitespace() = runBlocking {
+        val vault = vaultRepository.create("个人", "lock")
+        val csv = "name,url,username,password\nExample,https://example.com,user,\"  secret  \""
+        val result = manager.importChromeCsv(csv, vault.id)
+        assertEquals(1, result.imported)
+        assertEquals("  secret  ", passwordRepository.decryptedForVault(vault.id).single().password)
     }
 
     @Test fun encryptedStreamingBackupRoundTripsEmptyAndPopulatedVaults() = runBlocking {

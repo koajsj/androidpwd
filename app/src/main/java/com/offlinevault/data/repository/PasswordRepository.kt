@@ -17,8 +17,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.coroutineContext
 import java.util.UUID
 
@@ -70,8 +68,6 @@ data class PasswordHealthCandidate(
 
 class PasswordRepository(private val passwordDao: PasswordDao) {
 
-    private val writeMutex = Mutex()
-
     companion object {
         /** Trashed credentials are kept this many days before automatic permanent deletion. */
         const val TRASH_RETENTION_DAYS = 30
@@ -113,7 +109,8 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
             .combine(SessionManager.unlocked) { row, unlocked ->
                 if (!unlocked) return@combine null
                 try {
-                    SessionManager.withActiveSession { row?.let(::decryptMetadata) }
+                    // Keep the entity encrypted: detail decryption must happen exactly once.
+                    SessionManager.withActiveSession { row }
                 } catch (_: VaultLockedException) {
                     null
                 }
@@ -162,7 +159,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         tags: List<String>,
         note: String,
         favorite: Boolean? = null
-    ): String = writeMutex.withLock {
+    ): String = DatabaseWriteGate.withWrite {
         saveInternal(id, vaultId, title, username, password, url, tags, note, favorite)
     }
 
@@ -219,7 +216,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Moves a credential to the recycle bin (soft delete) instead of erasing it immediately. */
     suspend fun deleteById(id: String) {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 passwordDao.softDelete(id, System.currentTimeMillis())
             }
@@ -229,7 +226,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     /** Moves several credentials to the recycle bin at once (batch delete). */
     suspend fun deleteMany(ids: List<String>) {
         if (ids.isNotEmpty()) {
-            writeMutex.withLock {
+            DatabaseWriteGate.withWrite {
                 SessionManager.withActiveSession {
                     passwordDao.softDeleteMany(ids, System.currentTimeMillis())
                 }
@@ -239,7 +236,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Pins/unpins a credential. Favorites sort to the top of the list. */
     suspend fun setFavorite(id: String, favorite: Boolean) {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession { passwordDao.setFavorite(id, favorite) }
         }
     }
@@ -259,14 +256,14 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
             }
 
     suspend fun restore(id: String) {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession { passwordDao.restore(id) }
         }
     }
 
     /** Permanently erases a single trashed (or any) row by id. */
     suspend fun permanentlyDelete(id: String) {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 passwordDao.getById(id)?.let { passwordDao.delete(it) }
             }
@@ -274,7 +271,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     }
 
     suspend fun emptyTrash() {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession { passwordDao.emptyTrash() }
         }
     }
@@ -282,7 +279,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     /** Auto-purge: erase trashed rows older than [retentionDays]. Called once per unlock. */
     suspend fun purgeExpiredTrash(retentionDays: Int = TRASH_RETENTION_DAYS) {
         val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession { passwordDao.purgeTrashedOlderThan(cutoff) }
         }
     }
@@ -337,7 +334,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
      * instead of creating a duplicate. [identifier] is a domain or an `androidapp://<package>` id.
      */
     suspend fun upsertFromAutofill(vaultId: String, identifier: String, username: String, password: String) {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 val now = System.currentTimeMillis()
                 val existing = passwordDao.getPasswordsByVaultIdOnce(vaultId).firstOrNull { entity ->
@@ -478,7 +475,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
 
     /** Bulk insert used by import. Each [DecryptedPassword] is encrypted before storage. */
     suspend fun importDecrypted(vaultId: String, items: List<DecryptedPassword>): Int {
-        return writeMutex.withLock {
+        return DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 val now = System.currentTimeMillis()
                 val entities = items.map { item ->
@@ -513,7 +510,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     }
 
     suspend fun migrateLegacyEncryption() {
-        writeMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 passwordDao.getAllIncludingTrashedOnce().forEach { row ->
                     try {
@@ -548,6 +545,8 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                         }
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (e: VaultLockedException) {
+                        throw e
                     } catch (_: Exception) {
                         // Keep a damaged row isolated. The integrity sweep reports it after migration.
                     }
@@ -569,6 +568,8 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                             )
                         }
                     } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: VaultLockedException) {
                         throw e
                     } catch (_: Exception) {
                         // The integrity sweep reports and the UI skips a damaged history entry.

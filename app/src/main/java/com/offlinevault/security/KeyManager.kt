@@ -50,6 +50,7 @@ class KeyManager(
         recoveryAnswer: String,
         mnemonicPhrase: String
     ) {
+        val generation = SessionManager.sessionGeneration
         require(masterPassword.isNotBlank()) { "主密码不能为空" }
         require(recoveryQuestion.isNotBlank()) { "安全问题不能为空" }
         require(recoveryAnswer.trim().length >= MIN_NEW_RECOVERY_ANSWER_LENGTH) {
@@ -105,7 +106,7 @@ class KeyManager(
                 mnemonicKdfVersion = mnemonicKdf.version
             )
             prefs.resetFailures()
-            SessionManager.unlock(dek)
+            SessionManager.unlock(dek, generation)
             dekTransferredToSession = true
         } finally {
             masterSalt.fill(0)
@@ -128,6 +129,7 @@ class KeyManager(
     }
 
     suspend fun unlockWithPassword(masterPassword: String): UnlockResult {
+        val generation = SessionManager.sessionGeneration
         val delay = unlockDelaySeconds()
         if (delay > 0) return UnlockResult.Delayed(delay)
 
@@ -146,7 +148,7 @@ class KeyManager(
             var transferred = false
             try {
                 prefs.resetFailures()
-                SessionManager.unlock(dek)
+                SessionManager.unlock(dek, generation)
                 transferred = true
                 UnlockResult.Success
             } finally {
@@ -389,6 +391,8 @@ class KeyManager(
                 SessionManager.requireActiveSession(authorization.sessionGeneration)
                 updateMnemonicRecoveryForDek(SessionManager.requireKey(), mnemonicPhrase)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             UnlockResult.Error("密码库已锁定，请重新解锁")
         }
@@ -598,6 +602,7 @@ class KeyManager(
 
     /** Completes biometric unlock using the authenticated decrypt cipher. */
     suspend fun unlockWithBiometricCipher(authenticatedCipher: Cipher): UnlockResult {
+        val generation = SessionManager.sessionGeneration
         val blobB64 = prefs.biometricWrappedDek() ?: return UnlockResult.Error("尚未启用指纹解锁")
         return try {
             val blob = CryptoManager.decode(blobB64)
@@ -612,7 +617,7 @@ class KeyManager(
                 var transferred = false
                 try {
                     prefs.resetFailures()
-                    SessionManager.unlock(dek)
+                    SessionManager.unlock(dek, generation)
                     transferred = true
                     UnlockResult.Success
                 } finally {

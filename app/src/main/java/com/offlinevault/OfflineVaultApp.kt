@@ -28,6 +28,7 @@ class OfflineVaultApp : Application() {
         ClipboardHelper.restorePendingSensitiveClear(this)
         applicationScope.launch {
             SessionManager.unlocked.filter { it }.collect {
+                val generation = SessionManager.sessionGeneration
                 var recoveryMaterialMigrationFailed = false
                 withContext(Dispatchers.IO) {
                     try {
@@ -56,7 +57,7 @@ class OfflineVaultApp : Application() {
                     }
                 }
                 // The activity may have been backgrounded while maintenance was running.
-                if (!SessionManager.isUnlocked) {
+                if (!SessionManager.isUnlocked || SessionManager.sessionGeneration != generation) {
                     return@collect
                 }
                 if (recoveryMaterialMigrationFailed) {
@@ -77,7 +78,7 @@ class OfflineVaultApp : Application() {
                 }
                 // The activity may have been backgrounded (and the session locked) while the
                 // integrity check was running; nothing left to protect.
-                if (!SessionManager.isUnlocked) {
+                if (!SessionManager.isUnlocked || SessionManager.sessionGeneration != generation) {
                     return@collect
                 }
                 val report = integrity.getOrNull()

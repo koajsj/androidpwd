@@ -12,6 +12,8 @@ import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.KeyManager
 import com.offlinevault.security.KeystoreManager
 import com.offlinevault.security.UnlockResult
+import com.offlinevault.security.SessionManager
+import com.offlinevault.security.VaultLockedException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -258,6 +260,7 @@ class SettingsViewModel(
     // ---- Import / export ---------------------------------------------------
 
     fun buildEncryptedJsonBackup(password: String, onResult: (ExportPayload) -> Unit) {
+        val generation = SessionManager.sessionGeneration
         viewModelScope.launch {
             val result = try {
                 ExportPayload(
@@ -271,11 +274,14 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 ExportPayload(errorMessage = "无法创建加密备份")
             }
-            onResult(result)
+            publishForSession(generation, { onResult(result) }) {
+                onResult(ExportPayload(errorMessage = "密码库已锁定，请重新解锁后导出"))
+            }
         }
     }
 
     fun previewJsonImport(content: String, password: String, onResult: (ImportPreviewPayload) -> Unit) {
+        val generation = SessionManager.sessionGeneration
         viewModelScope.launch {
             val result = try {
                 ImportPreviewPayload(
@@ -288,11 +294,14 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 ImportPreviewPayload(errorMessage = "无法预览备份：密码错误、格式无效或文件已损坏")
             }
-            onResult(result)
+            publishForSession(generation, { onResult(result) }) {
+                onResult(ImportPreviewPayload(errorMessage = "密码库已锁定，请重新解锁后导入"))
+            }
         }
     }
 
     fun previewCsvImport(content: String, vaultId: String, onResult: (ImportPreviewPayload) -> Unit) {
+        val generation = SessionManager.sessionGeneration
         viewModelScope.launch {
             val result = try {
                 ImportPreviewPayload(
@@ -307,11 +316,14 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 ImportPreviewPayload(errorMessage = "无法预览 CSV")
             }
-            onResult(result)
+            publishForSession(generation, { onResult(result) }) {
+                onResult(ImportPreviewPayload(errorMessage = "密码库已锁定，请重新解锁后导入"))
+            }
         }
     }
 
     fun buildCsv(vaultId: String, slim: Boolean, onResult: (ExportPayload) -> Unit) {
+        val generation = SessionManager.sessionGeneration
         viewModelScope.launch {
             val result = try {
                 ExportPayload(
@@ -322,7 +334,9 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 ExportPayload(errorMessage = "无法导出 CSV")
             }
-            onResult(result)
+            publishForSession(generation, { onResult(result) }) {
+                onResult(ExportPayload(errorMessage = "密码库已锁定，请重新解锁后导出"))
+            }
         }
     }
 
@@ -359,6 +373,14 @@ class SettingsViewModel(
                 ImportResult(0, 0, 0, listOf("导入失败，请检查文件后重试"))
             }
             onResult(result)
+        }
+    }
+
+    private fun publishForSession(generation: Long, publish: () -> Unit, onLocked: () -> Unit) {
+        try {
+            SessionManager.withActiveSessionNow(generation, publish)
+        } catch (_: VaultLockedException) {
+            onLocked()
         }
     }
 

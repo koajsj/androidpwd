@@ -10,15 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 class VaultRepository(private val vaultDao: VaultDao) {
-
-    // Serialises ensureDefault() so two concurrent callers (e.g. the password list loading while an
-    // autofill save unlocks) can't both pass the "no vault yet" check and create duplicate defaults.
-    private val ensureDefaultMutex = Mutex()
 
     // Vault names are encrypted metadata. Decrypt the complete switcher list away from Compose's
     // main thread so a large multi-vault import does not hitch navigation or settings rendering.
@@ -43,7 +37,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
         }
 
     suspend fun create(name: String, icon: String): VaultEntity =
-        ensureDefaultMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 val id = UUID.randomUUID().toString()
                 val vault = VaultEntity(
@@ -58,7 +52,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
 
     /** Renames a vault without exposing its display name in the database. */
     suspend fun rename(id: String, name: String): VaultEntity? =
-        ensureDefaultMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 val existing = vaultDao.getById(id) ?: return@withActiveSession null
                 val updated = existing.copy(
@@ -74,7 +68,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
      * Deletes one vault and its credentials through Room's foreign-key cascade. At least one
      * vault is always retained, so callers never end up with an unusable empty destination.
      */
-    suspend fun deleteKeepingOne(id: String): VaultDeleteResult = ensureDefaultMutex.withLock {
+    suspend fun deleteKeepingOne(id: String): VaultDeleteResult = DatabaseWriteGate.withWrite {
         SessionManager.withActiveSession {
             val vaults = vaultDao.getAllVaultsOnce()
             val target = vaults.firstOrNull { it.id == id } ?:
@@ -88,7 +82,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     suspend fun touch(vaultId: String) {
-        ensureDefaultMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 vaultDao.getById(vaultId)?.let {
                     vaultDao.update(it.copy(updatedAt = System.currentTimeMillis()))
@@ -98,7 +92,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     /** Ensures there is always at least one vault to put credentials into. */
-    suspend fun ensureDefault(): VaultEntity = ensureDefaultMutex.withLock {
+    suspend fun ensureDefault(): VaultEntity = DatabaseWriteGate.withWrite {
         SessionManager.withActiveSession {
             vaultDao.firstVault()?.let { return@withActiveSession decrypt(it) }
             val id = UUID.randomUUID().toString()
@@ -113,14 +107,14 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     suspend fun insertImported(vault: VaultEntity) {
-        ensureDefaultMutex.withLock {
+        DatabaseWriteGate.withWrite {
             SessionManager.withActiveSession {
                 vaultDao.insert(vault.copy(name = EncryptedField.encrypt(vault.name, nameContext(vault.id))))
             }
         }
     }
 
-    suspend fun migrateLegacyMetadata() {
+    suspend fun migrateLegacyMetadata() = DatabaseWriteGate.withWrite {
         SessionManager.withActiveSession {
             vaultDao.getAllVaultsOnce().forEach { row ->
                 // Isolate a single damaged vault name the same way credential migration isolates a

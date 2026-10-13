@@ -8,7 +8,8 @@ import javax.crypto.SecretKey
 
 /**
  * Holds the in-memory unlocked state of the app. The Data Encryption Key (DEK) only ever lives
- * here while the vault is unlocked, and is dropped the moment the app is locked or backgrounded.
+ * here while the vault is unlocked. Lock revokes access immediately and erases the key once any
+ * already-running operation has unwound, without blocking Android's lifecycle thread.
  */
 object SessionManager {
 
@@ -23,37 +24,52 @@ object SessionManager {
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked
 
-    val isUnlocked: Boolean get() = dek != null
+    val isUnlocked: Boolean get() = _unlocked.value
     /** Changes on every lock and unlock, so short-lived authorizations cannot cross sessions. */
     val sessionGeneration: Long get() = sessionGenerationCounter.get()
 
-    fun unlock(key: SecretKey) {
-        awaitSessionOperations()
+    fun unlock(key: SecretKey, expectedGeneration: Long = sessionGeneration) {
+        sessionLock.lock()
         try {
+            if (sessionGeneration != expectedGeneration) {
+                throw VaultLockedException("Authentication session expired")
+            }
+            changingSession = true
+            while (activeOperations > 0) sessionChanged.await()
+            if (sessionGeneration != expectedGeneration) {
+                throw VaultLockedException("Authentication session expired")
+            }
             if (dek !== key) CryptoManager.destroyKey(dek)
             dek = key
             sessionGenerationCounter.incrementAndGet()
             _unlocked.value = true
         } finally {
-            finishSessionChange()
+            changingSession = false
+            sessionChanged.signalAll()
+            sessionLock.unlock()
         }
     }
 
     fun lock() {
-        awaitSessionOperations()
+        sessionLock.lock()
         try {
-            CryptoManager.destroyKey(dek)
-            dek = null
+            // Lifecycle callbacks run on Main. Never wait there for a Room suspension which
+            // needs Main to resume. Revoke admission/results immediately; retain the old key
+            // only until already-running work leaves its gate, then destroy it below.
+            changingSession = true
             sessionGenerationCounter.incrementAndGet()
             _unlocked.value = false
+            if (activeOperations == 0) clearLockedKey()
         } finally {
-            finishSessionChange()
+            sessionLock.unlock()
         }
     }
 
     /** Returns the active DEK or throws if the app is locked. */
-    fun requireKey(): SecretKey =
-        dek ?: throw VaultLockedException("Vault is locked")
+    fun requireKey(): SecretKey {
+        if (!isUnlocked) throw VaultLockedException("Vault is locked")
+        return dek ?: throw VaultLockedException("Vault is locked")
+    }
 
     /**
      * Captures the current session for a sensitive operation. Call [requireActiveSession] again
@@ -72,21 +88,31 @@ object SessionManager {
      * the whole read instead of silently dropping rows.
      */
     fun requireActiveSession(expectedGeneration: Long) {
-        if (dek == null || sessionGenerationCounter.get() != expectedGeneration) {
+        if (!isUnlocked || dek == null || sessionGenerationCounter.get() != expectedGeneration) {
             throw VaultLockedException("Vault session is no longer active")
         }
     }
 
+    /** Short, non-suspending publication only (UI state / Autofill handoff); never do IO here. */
+    fun <T> withActiveSessionNow(expectedGeneration: Long, block: () -> T): T {
+        sessionLock.lock()
+        try {
+            requireActiveSession(expectedGeneration)
+            return block().also { requireActiveSession(expectedGeneration) }
+        } finally {
+            sessionLock.unlock()
+        }
+    }
+
     /**
-     * Runs a sensitive operation while lock/unlock is excluded from its database commit.
-     * The generation is verified before a result escapes, so old-session data cannot be
-     * published if session-transition behavior changes in the future.
+     * Pins key disposal until the operation exits, but never delays revocation. A database
+     * transaction must put this gate inside its transaction so invalidation rolls it back.
      */
     suspend fun <T> withActiveSession(block: suspend () -> T): T {
         val generation: Long
         sessionLock.lock()
         try {
-            if (changingSession || dek == null) throw VaultLockedException("Vault is locked")
+            if (changingSession || !isUnlocked || dek == null) throw VaultLockedException("Vault is locked")
             activeOperations++
             generation = sessionGenerationCounter.get()
         } finally {
@@ -98,31 +124,22 @@ object SessionManager {
             sessionLock.lock()
             try {
                 activeOperations--
-                if (activeOperations == 0) sessionChanged.signalAll()
+                if (activeOperations == 0) {
+                    if (!isUnlocked) clearLockedKey()
+                    sessionChanged.signalAll()
+                }
             } finally {
                 sessionLock.unlock()
             }
         }
     }
 
-    private fun awaitSessionOperations() {
-        sessionLock.lock()
-        try {
-            changingSession = true
-            while (activeOperations > 0) sessionChanged.await()
-        } finally {
-            sessionLock.unlock()
-        }
-    }
-
-    private fun finishSessionChange() {
-        sessionLock.lock()
-        try {
-            changingSession = false
-            sessionChanged.signalAll()
-        } finally {
-            sessionLock.unlock()
-        }
+    /** Called only with sessionLock held. */
+    private fun clearLockedKey() {
+        CryptoManager.destroyKey(dek)
+        dek = null
+        changingSession = false
+        sessionChanged.signalAll()
     }
 }
 
