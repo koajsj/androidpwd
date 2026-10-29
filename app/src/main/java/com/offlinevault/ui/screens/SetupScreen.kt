@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -74,7 +76,7 @@ fun SetupScreen(
     // the user later chooses to disable the general screenshot-block setting.
     SecureWindowEffect(enabled = pendingMnemonicWords != null)
 
-    val strength = PasswordStrengthChecker.evaluate(master)
+    val strength = remember(master) { PasswordStrengthChecker.evaluate(master) }
     val canSubmit = credType.isValid(master) && confirm.isNotEmpty() &&
         question.isNotBlank() &&
         answer.trim().length >= KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
@@ -93,6 +95,8 @@ fun SetupScreen(
         Column(
             Modifier
                 .fillMaxSize()
+                .wrapContentWidth()
+                .widthIn(max = 560.dp)
                 .systemBarsPadding()
                 .imePadding()
                 .verticalScroll(rememberScrollState())
@@ -135,6 +139,8 @@ fun SetupScreen(
     Column(
         Modifier
             .fillMaxSize()
+            .wrapContentWidth()
+            .widthIn(max = 560.dp)
             .systemBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())

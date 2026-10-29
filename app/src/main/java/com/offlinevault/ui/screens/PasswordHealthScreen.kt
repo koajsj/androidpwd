@@ -36,8 +36,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.offlinevault.ui.components.SectionCard
-import com.offlinevault.ui.theme.RiskHigh
-import com.offlinevault.ui.theme.RiskMedium
 import com.offlinevault.viewmodel.PasswordHealthViewModel
 import com.offlinevault.security.SecurityLevel
 
@@ -82,6 +80,8 @@ fun PasswordHealthScreen(
             else -> {
                 val report = state.report
                 val neutralRiskColor = MaterialTheme.colorScheme.onSurfaceVariant
+                val highRiskColor = MaterialTheme.colorScheme.error
+                val mediumRiskColor = MaterialTheme.colorScheme.tertiary
                 // A health report can legitimately contain every entry in a large imported
                 // vault. Lazy rendering keeps this screen responsive instead of composing every
                 // weak/reused/stale row before the first frame appears.
@@ -127,14 +127,14 @@ fun PasswordHealthScreen(
                     issueSection(
                         title = "弱密码",
                         description = "强度过低，容易被破解，建议尽快更换。",
-                        color = RiskHigh,
+                        color = highRiskColor,
                         entries = report.weak,
                         onOpenItem = onOpenItem
                     )
                     issueSection(
                         title = "重复使用的密码",
                         description = "多个账号使用了相同的密码，一处泄露会牵连其它账号。",
-                        color = RiskMedium,
+                        color = mediumRiskColor,
                         entries = report.reused,
                         onOpenItem = onOpenItem
                     )
@@ -156,8 +156,8 @@ fun PasswordHealthScreen(
 private fun SummaryCard(report: PasswordHealthViewModel.HealthReport) {
     val scoreColor = when (report.security.level) {
         SecurityLevel.LOW -> MaterialTheme.colorScheme.primary
-        SecurityLevel.MEDIUM -> RiskMedium
-        SecurityLevel.HIGH, SecurityLevel.CRITICAL -> RiskHigh
+        SecurityLevel.MEDIUM -> MaterialTheme.colorScheme.tertiary
+        SecurityLevel.HIGH, SecurityLevel.CRITICAL -> MaterialTheme.colorScheme.error
     }
     val levelText = when (report.security.level) {
         SecurityLevel.LOW -> "良好"
@@ -168,7 +168,7 @@ private fun SummaryCard(report: PasswordHealthViewModel.HealthReport) {
     SectionCard {
         Column {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
                     Text("密码安全评分", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text("完全在本地分析，不会上传密码", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -181,8 +181,8 @@ private fun SummaryCard(report: PasswordHealthViewModel.HealthReport) {
             Text("共 ${report.total} 条密码 · 长度 30% · 复杂度 30% · 唯一性 20% · 更新时间 20%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat("弱密码", report.weak.size, RiskHigh)
-                Stat("重复", report.reused.size, RiskMedium)
+                Stat("弱密码", report.weak.size, MaterialTheme.colorScheme.error)
+                Stat("重复", report.reused.size, MaterialTheme.colorScheme.tertiary)
                 // Stale is the least severe and purely informational — neutral, not "safe green".
                 Stat("久未更新", report.stale.size, MaterialTheme.colorScheme.onSurfaceVariant)
             }

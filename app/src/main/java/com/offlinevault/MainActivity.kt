@@ -1,10 +1,9 @@
 package com.offlinevault
 
-import android.graphics.Color
 import android.os.Bundle
+import android.content.res.Configuration
 import android.view.View
 import android.view.WindowManager
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -12,11 +11,11 @@ import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,7 +24,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
@@ -48,8 +46,6 @@ import com.offlinevault.ui.screens.SetupScreen
 import com.offlinevault.ui.screens.TrashScreen
 import com.offlinevault.ui.screens.UnlockScreen
 import com.offlinevault.ui.theme.OfflineVaultTheme
-import com.offlinevault.ui.theme.VaultBackground
-import com.offlinevault.ui.theme.VaultBackgroundElevated
 import com.offlinevault.utils.BiometricHelper
 import com.offlinevault.utils.ClipboardHelper
 import com.offlinevault.viewmodel.AppLockState
@@ -120,11 +116,7 @@ class MainActivity : FragmentActivity() {
         // here. (Our own autofill service only reads OTHER apps, so this does not affect it.)
         window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
 
-        // The app uses a white palette, so transparent system bars need dark icons.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
-        )
+        enableEdgeToEdge()
 
         // Apply / clear FLAG_SECURE reactively from the screenshot-block setting.
         // Start fail-closed: DataStore is asynchronous, so a recreated unlocked activity must not
@@ -147,19 +139,21 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             OfflineVaultTheme {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(VaultBackgroundElevated, VaultBackground)
-                            )
-                        )
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.onBackground
                 ) {
                     AppRoot()
                 }
             }
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // uiMode is handled in place; refresh system-bar icon contrast as well as Compose colors.
+        enableEdgeToEdge()
     }
 
     override fun onDestroy() {
@@ -392,10 +386,10 @@ private fun MainNavHost(
     NavHost(
         navController = navController,
         startDestination = "passwords",
-        enterTransition = { fadeIn(tween(250)) + slideIntoContainer(SlideDirection.Start, tween(250)) },
-        exitTransition = { fadeOut(tween(200)) + slideOutOfContainer(SlideDirection.Start, tween(200)) },
-        popEnterTransition = { fadeIn(tween(250)) + slideIntoContainer(SlideDirection.End, tween(250)) },
-        popExitTransition = { fadeOut(tween(200)) + slideOutOfContainer(SlideDirection.End, tween(200)) }
+        enterTransition = { fadeIn(tween(180)) + slideIntoContainer(SlideDirection.Start, tween(180), initialOffset = { it / 16 }) },
+        exitTransition = { fadeOut(tween(140)) },
+        popEnterTransition = { fadeIn(tween(180)) + slideIntoContainer(SlideDirection.End, tween(180), initialOffset = { it / 16 }) },
+        popExitTransition = { fadeOut(tween(140)) }
     ) {
         composable("passwords") {
             val vm: PasswordListViewModel = viewModel(factory = ViewModelFactory.Factory)

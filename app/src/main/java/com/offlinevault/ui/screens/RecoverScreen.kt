@@ -30,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import com.offlinevault.security.CredentialType
 import com.offlinevault.security.MnemonicManager
 import com.offlinevault.security.PasswordStrengthChecker
@@ -61,7 +63,7 @@ fun RecoverScreen(
     var working by remember { mutableStateOf(false) }
 
     val keyboardType = if (credentialType.isNumeric) KeyboardType.NumberPassword else KeyboardType.Password
-    val strength = PasswordStrengthChecker.evaluate(newPassword)
+    val strength = remember(newPassword) { PasswordStrengthChecker.evaluate(newPassword) }
     val canSubmit = when (mode) {
         0 -> answer.isNotBlank() && credentialType.isValid(newPassword) && confirm.isNotEmpty()
         else -> mnemonic.isNotBlank() && credentialType.isValid(newPassword) && confirm.isNotEmpty()
@@ -72,6 +74,8 @@ fun RecoverScreen(
     Column(
         Modifier
             .fillMaxSize()
+            .wrapContentWidth()
+            .widthIn(max = 560.dp)
             .systemBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())

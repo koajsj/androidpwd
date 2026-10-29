@@ -32,11 +32,11 @@ object ClipboardHelper {
     private var pendingClear: Runnable? = null
     private var pendingMarker: String? = null
 
-    fun copySensitive(context: Context, label: String, value: String, clearAfterSeconds: Int) {
+    fun copySensitive(context: Context, label: String, value: String, clearAfterSeconds: Int): Boolean {
         val effectiveClearSeconds =
             if (clearAfterSeconds > 0) clearAfterSeconds else DEFAULT_SENSITIVE_CLEAR_SECONDS
         val appContext = context.applicationContext
-        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false
         val clip = ClipData.newPlainText(label, value)
         // Do not retain [value] in the delayed Runnable. A random, non-sensitive marker lets us
         // identify this exact clip later without keeping a copied password alive in app memory.
@@ -46,7 +46,7 @@ object ClipboardHelper {
             putBoolean("android.content.extra.IS_SENSITIVE", true)
             putString(CLIP_MARKER_KEY, marker)
         }
-        runCatching { clipboard.setPrimaryClip(clip) }.getOrElse { return }
+        runCatching { clipboard.setPrimaryClip(clip) }.getOrElse { return false }
 
         pendingClear?.let { handler.removeCallbacks(it) }
         cancelScheduledClear(appContext)
@@ -60,6 +60,7 @@ object ClipboardHelper {
         // cleanup alive if Android reclaims this process before the delay expires. No exact-alarm
         // permission is requested; the OS may defer this fallback while idle.
         scheduleSystemClear(appContext, marker, delayMs)
+        return true
     }
 
     fun copyPlain(context: Context, label: String, value: String) {

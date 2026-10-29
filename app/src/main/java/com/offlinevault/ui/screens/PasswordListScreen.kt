@@ -3,6 +3,8 @@ package com.offlinevault.ui.screens
 import android.view.autofill.AutofillManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
@@ -35,7 +37,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
@@ -53,7 +55,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,12 +81,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -304,16 +308,29 @@ fun PasswordListScreen(
                             onClick = { showVaultPicker = true },
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text(vaultName.ifEmpty { "我的密码" }, fontWeight = FontWeight.Bold)
+                            Text(vaultName.ifEmpty { "我的密码" }, fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false))
                             Icon(Icons.Filled.ArrowDropDown, contentDescription = "切换密码库")
                         }
                     },
                     actions = {
                         Box {
                             IconButton(onClick = { showSort = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "排序")
+                                Icon(Icons.Filled.MoreVert, contentDescription = "排序与导入")
                             }
                             DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("导入密码") },
+                                    leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                                    onClick = { showSort = false; launchImport() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("粘贴导入") },
+                                    onClick = { showSort = false; showPasteImport = true }
+                                )
+                                androidx.compose.material3.HorizontalDivider()
                                 SortMenuItem("最近更新", SortOrder.UPDATED, sortOrder) {
                                     viewModel.setSortOrder(it); showSort = false
                                 }
@@ -325,9 +342,6 @@ fun PasswordListScreen(
                                 }
                             }
                         }
-                        IconButton(onClick = { launchImport() }) {
-                            Icon(Icons.Filled.Download, contentDescription = "导入密码")
-                        }
                         IconButton(onClick = onOpenSettings) {
                             Icon(Icons.Filled.Settings, contentDescription = "设置")
                         }
@@ -338,19 +352,21 @@ fun PasswordListScreen(
         },
         floatingActionButton = {
             if (!selectionMode) {
-                FloatingActionButton(
+                ExtendedFloatingActionButton(
                     onClick = onAddItem,
                     containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = Color.White
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加密码")
-                }
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("添加密码") }
+                )
             }
         }
     ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
+                .wrapContentWidth()
+                .widthIn(max = 840.dp)
                 .padding(padding)
                 .padding(horizontal = 16.dp)
         ) {
@@ -359,7 +375,7 @@ fun PasswordListScreen(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
                         .padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 4.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -390,12 +406,19 @@ fun PasswordListScreen(
                 onValueChange = viewModel::shezhiChaxun,
                 placeholder = { Text("搜索标题、用户名或网址…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) IconButton(onClick = { viewModel.shezhiChaxun("") }) {
+                        Icon(Icons.Filled.Close, contentDescription = "清除搜索")
+                    }
+                },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
                 )
             )
 
@@ -408,8 +431,8 @@ fun PasswordListScreen(
                             onClick = { viewModel.qiehuanBiaoqian(tag) },
                             label = { Text(tag) },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                selectedLabelColor = MaterialTheme.colorScheme.primary
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         )
                     }
@@ -417,14 +440,29 @@ fun PasswordListScreen(
             }
 
             Spacer(Modifier.height(12.dp))
+            Text(
+                "${items.size} 项密码${if (activeTag != null) " · $activeTag" else ""}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+            Spacer(Modifier.height(8.dp))
 
             if (items.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (query.isBlank() && activeTag == null) "暂无密码，点击 + 添加，或用右上角导入。"
-                        else "没有匹配结果",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)) {
+                        Icon(Icons.Filled.Search, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text(if (query.isBlank() && activeTag == null) "第一项密码，从这里开始" else "没有匹配的密码",
+                            style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(8.dp))
+                        Text(if (query.isBlank() && activeTag == null) "点击“添加密码”，或从右上角菜单导入。" else "试试其他关键词，或取消标签筛选。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
                 }
             } else {
                 LazyColumn(
@@ -434,6 +472,7 @@ fun PasswordListScreen(
                     items(items, key = { it.id }, contentType = { "password" }) { item ->
                         PasswordCard(
                             item = item,
+                            modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null, placementSpec = tween(180)),
                             selected = item.id in selectedIds,
                             selectionMode = selectionMode,
                             onClick = {
@@ -716,6 +755,7 @@ private fun SortMenuItem(
 @Composable
 private fun PasswordCard(
     item: PasswordEntity,
+    modifier: Modifier = Modifier,
     selected: Boolean,
     selectionMode: Boolean,
     onClick: () -> Unit,
@@ -727,43 +767,46 @@ private fun PasswordCard(
 
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.98f else 1f, label = "cardPress")
+    val scale by animateFloatAsState(if (pressed) 0.99f else 1f, tween(140), label = "cardPress")
 
     val borderColor = if (selected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-    val containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-    else MaterialTheme.colorScheme.surface
+    else MaterialTheme.colorScheme.outlineVariant
+    val containerColor by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        tween(160), label = "credentialSelection")
+    val favoriteTint by animateColorAsState(
+        if (item.favorite) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+        tween(160), label = "favoriteTint")
 
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .scale(scale)
-            .shadow(10.dp, CardShape, clip = false, spotColor = Color.Black, ambientColor = Color.Black)
             .clip(CardShape)
             .background(containerColor)
             .border(1.dp, borderColor, CardShape)
             .combinedClickable(
                 interactionSource = interaction,
-                indication = null,
+                indication = ripple(),
                 onClick = onClick,
+                onLongClickLabel = "选择密码",
                 onLongClick = onLongClick
             )
-            .padding(16.dp),
+            .semantics { this.selected = selected }
+            .padding(horizontal = 14.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 1f else 0.16f)),
+                .size(32.dp),
             contentAlignment = Alignment.Center
         ) {
             if (selected) {
-                Icon(Icons.Filled.Check, contentDescription = "已选中", tint = Color.White)
+                Icon(Icons.Filled.Check, contentDescription = "已选中", tint = MaterialTheme.colorScheme.primary)
             } else {
                 Text(
                     item.title.take(1).uppercase(Locale.ROOT).ifEmpty { "?" },
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium
                 )
@@ -771,39 +814,41 @@ private fun PasswordCard(
         }
         Spacer(Modifier.size(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(item.title.ifEmpty { "无标题" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(item.title.ifEmpty { "无标题" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (item.username.isNotEmpty()) {
-                Text(item.username, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                Text(item.username, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(
-                "••••••••••",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = FontFamily.Monospace
-            )
-            if (tagList.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    tagList.take(3).forEach { tag ->
-                        Box(
-                            Modifier
-                                .widthIn(max = 140.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                tag,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+            if (item.url.isNotEmpty()) {
+                Text(item.url, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                RiskChip(level = level)
+                tagList.take(3).forEach { tag ->
+                    Box(
+                        Modifier
+                            .widthIn(max = 140.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            tag,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                }
+                if (tagList.size > 3) {
+                    Text("+${tagList.size - 3}", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -813,11 +858,9 @@ private fun PasswordCard(
                 Icon(
                     if (item.favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
                     contentDescription = if (item.favorite) "取消收藏" else "收藏",
-                    tint = if (item.favorite) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = favoriteTint
                 )
             }
         }
-        RiskChip(level = level)
     }
 }

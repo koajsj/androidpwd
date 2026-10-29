@@ -14,3 +14,11 @@ keystore.properties
 *.keystore
 /app/build
 /app/release
+.taste-skill/
+*.apk
+*.aab
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal

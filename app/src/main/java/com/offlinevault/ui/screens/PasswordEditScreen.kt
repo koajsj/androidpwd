@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -40,11 +42,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.ui.components.PasswordGeneratorSheet
 import com.offlinevault.ui.components.PasswordVisualField
 import com.offlinevault.ui.components.PrimaryButton
 import com.offlinevault.ui.components.SectionCard
+import com.offlinevault.ui.components.SectionHeading
 import com.offlinevault.ui.components.StrengthMeter
 import com.offlinevault.ui.components.VaultTextField
 import com.offlinevault.viewmodel.PasswordEditViewModel
@@ -63,6 +68,7 @@ fun PasswordEditScreen(
     val form by viewModel.form.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
+    val editable = !isSaving
     val hasUnsavedChanges by viewModel.hasUnsavedChanges.collectAsStateWithLifecycle()
 
     var reveal by remember { mutableStateOf(false) }
@@ -71,7 +77,8 @@ fun PasswordEditScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    val strength = PasswordStrengthChecker.evaluate(form.password)
+    val strength = remember(form.password) { PasswordStrengthChecker.evaluate(form.password) }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { reveal = false; showGenerator = false }
 
     fun requestBack() {
         when {
@@ -111,32 +118,36 @@ fun PasswordEditScreen(
         Column(
             Modifier
                 .fillMaxSize()
+                .wrapContentWidth()
+                .widthIn(max = 720.dp)
                 .padding(padding)
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
+            SectionHeading("登录信息", "标题用于识别账号，密码将加密保存在本机。")
             SectionCard {
                 Column {
-                    VaultTextField(value = form.title, onValueChange = { v -> viewModel.update { it.copy(title = v) } }, label = "标题")
+                    VaultTextField(value = form.title, onValueChange = { v -> viewModel.update { it.copy(title = v) } }, label = "标题", enabled = editable)
                     Spacer(Modifier.height(12.dp))
-                    VaultTextField(value = form.username, onValueChange = { v -> viewModel.update { it.copy(username = v) } }, label = "用户名 / 邮箱")
+                    VaultTextField(value = form.username, onValueChange = { v -> viewModel.update { it.copy(username = v) } }, label = "用户名 / 邮箱", enabled = editable)
                     Spacer(Modifier.height(12.dp))
                     PasswordVisualField(
                         value = form.password,
                         onValueChange = { v -> viewModel.setPassword(v) },
                         label = "密码",
                         revealed = reveal,
+                        enabled = editable,
                         trailing = {
                             Row {
-                                IconButton(onClick = { reveal = !reveal }) {
+                                IconButton(onClick = { reveal = !reveal }, enabled = editable) {
                                     Icon(
                                         if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                        contentDescription = "切换显示状态",
+                                        contentDescription = if (reveal) "隐藏密码" else "显示密码",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                IconButton(onClick = { showGenerator = true }) {
+                                IconButton(onClick = { showGenerator = true }, enabled = editable) {
                                     Icon(Icons.Filled.AutoMode, contentDescription = "生成密码", tint = MaterialTheme.colorScheme.primary)
                                 }
                             }
@@ -147,33 +158,36 @@ fun PasswordEditScreen(
                         StrengthMeter(score = strength.score, level = strength.level)
                     }
                     Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { showGenerator = true }) {
+                    TextButton(onClick = { showGenerator = true }, enabled = editable) {
                         Icon(Icons.Filled.AutoMode, contentDescription = null)
                         Text("  生成强密码")
                     }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(24.dp))
+            SectionHeading("其他信息", "网址、标签和备注均为选填。")
 
             SectionCard {
                 Column {
-                    VaultTextField(value = form.url, onValueChange = { v -> viewModel.update { it.copy(url = v) } }, label = "网址", keyboardType = KeyboardType.Uri)
+                    VaultTextField(value = form.url, onValueChange = { v -> viewModel.update { it.copy(url = v) } }, label = "网址", keyboardType = KeyboardType.Uri, enabled = editable)
                     Spacer(Modifier.height(12.dp))
                     VaultTextField(
                         value = form.tags,
                         onValueChange = { v -> viewModel.update { it.copy(tags = v) } },
                         label = "标签（每行一个）",
-                        singleLine = false
+                        singleLine = false,
+                        enabled = editable
                     )
                     Spacer(Modifier.height(12.dp))
-                    VaultTextField(value = form.note, onValueChange = { v -> viewModel.update { it.copy(note = v) } }, label = "备注（已加密）", singleLine = false)
+                    VaultTextField(value = form.note, onValueChange = { v -> viewModel.update { it.copy(note = v) } }, label = "备注（已加密）", singleLine = false, enabled = editable)
                 }
             }
 
             Spacer(Modifier.height(24.dp))
             PrimaryButton(
                 text = if (isSaving) "正在保存…" else "保存",
+                loading = isSaving,
                 onClick = {
                     viewModel.save { ok, message ->
                         if (ok) {
@@ -184,7 +198,7 @@ fun PasswordEditScreen(
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isSaving
+                enabled = editable
             )
             Spacer(Modifier.height(24.dp))
         }

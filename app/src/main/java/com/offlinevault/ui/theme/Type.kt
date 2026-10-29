@@ -10,7 +10,7 @@ val VaultTypography = Typography(
     headlineLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 30.sp,
+        fontSize = 28.sp,
         lineHeight = 36.sp,
         letterSpacing = (-0.5).sp
     ),
@@ -37,8 +37,8 @@ val VaultTypography = Typography(
     bodyLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 22.sp
+        fontSize = 16.sp,
+        lineHeight = 24.sp
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
@@ -57,6 +57,6 @@ val VaultTypography = Typography(
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.4.sp
+        letterSpacing = 0.sp
     )
 )

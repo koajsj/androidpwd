@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,9 +51,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.StrengthMeter
+import com.offlinevault.ui.components.SectionHeading
 import com.offlinevault.utils.ClipboardHelper
 import com.offlinevault.utils.Formatters
 import com.offlinevault.viewmodel.PasswordDetailViewModel
@@ -74,12 +80,19 @@ fun PasswordDetailScreen(
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var reveal by remember { mutableStateOf(false) }
+    var reveal by remember(passwordId) { mutableStateOf(false) }
+    var revealedHistoryId by remember(passwordId) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose { viewModel.clearHistory() }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        reveal = false
+        revealedHistoryId = null
+        showHistory = false
+        viewModel.clearHistory()
     }
 
     fun toast(message: String) = scope.launch { snackbar.showSnackbar(message) }
@@ -117,23 +130,38 @@ fun PasswordDetailScreen(
                     Modifier.fillMaxSize().padding(padding).padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(error!!, color = MaterialTheme.colorScheme.error)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(error!!, color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = onBack) { Text("返回列表") }
+                    }
+                }
+            } else {
+                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
             }
             return@Scaffold
         }
         val hasPassword = current.password.isNotEmpty()
-        val strength = if (hasPassword) PasswordStrengthChecker.evaluate(current.password) else null
+        val strength = remember(current.password) {
+            if (hasPassword) PasswordStrengthChecker.evaluate(current.password) else null
+        }
 
         Column(
             Modifier
                 .fillMaxSize()
+                .wrapContentWidth()
+                .widthIn(max = 720.dp)
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
-            Text(current.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(16.dp))
+            Text(current.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Text("更新于 ${Formatters.fullDate(current.updatedAt)}", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(24.dp))
+            SectionHeading("登录凭据")
 
             SectionCard {
                 Column {
@@ -142,9 +170,10 @@ fun PasswordDetailScreen(
                         value = current.username.ifEmpty { "—" },
                         onCopy = if (current.username.isNotEmpty()) {
                             {
-                                ClipboardHelper.copySensitive(context, "用户名", current.username, clipboardSeconds)
+                                val copied = ClipboardHelper.copySensitive(context, "用户名", current.username, clipboardSeconds)
                                 toast(
-                                    if (clipboardSeconds > 0) "用户名已复制，将在 ${clipboardSeconds} 秒后清除"
+                                    if (!copied) "复制失败，请重试"
+                                    else if (clipboardSeconds > 0) "用户名已复制，将在 ${clipboardSeconds} 秒后清除"
                                     else "用户名已复制"
                                 )
                             }
@@ -174,18 +203,19 @@ fun PasswordDetailScreen(
                         IconButton(onClick = { reveal = !reveal }, enabled = hasPassword) {
                             Icon(
                                 if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                contentDescription = "切换显示状态",
+                                contentDescription = if (reveal) "隐藏密码" else "显示密码",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         IconButton(onClick = {
-                            ClipboardHelper.copySensitive(context, "密码", current.password, clipboardSeconds)
+                            val copied = ClipboardHelper.copySensitive(context, "密码", current.password, clipboardSeconds)
                             toast(
-                                if (clipboardSeconds > 0) "密码已复制，将在 ${clipboardSeconds} 秒后清除"
+                                if (!copied) "复制失败，请重试"
+                                else if (clipboardSeconds > 0) "密码已复制，将在 ${clipboardSeconds} 秒后清除"
                                 else "密码已复制"
                             )
                         }, enabled = hasPassword) {
-                            Icon(Icons.Filled.ContentCopy, contentDescription = "复制", tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "复制密码", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                     if (strength != null) {
@@ -246,7 +276,7 @@ fun PasswordDetailScreen(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.loadHistory(); showHistory = true }
+                            .clickable { revealedHistoryId = null; viewModel.loadHistory(); showHistory = true }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -267,19 +297,13 @@ fun PasswordDetailScreen(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "更新于 ${Formatters.fullDate(current.updatedAt)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             Spacer(Modifier.height(24.dp))
         }
     }
 
     if (showHistory) {
         AlertDialog(
-            onDismissRequest = { showHistory = false; viewModel.clearHistory() },
+            onDismissRequest = { showHistory = false; revealedHistoryId = null; viewModel.clearHistory() },
             title = { Text("历史密码") },
             text = {
                 if (history.isEmpty()) {
@@ -291,7 +315,7 @@ fun PasswordDetailScreen(
                             .verticalScroll(rememberScrollState())
                     ) {
                         Text(
-                            "曾经使用过的密码，最新在前。点击复制。",
+                            "曾用密码默认隐藏，最新在前。点击条目可复制。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -301,9 +325,10 @@ fun PasswordDetailScreen(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        ClipboardHelper.copySensitive(context, "历史密码", entry.password, clipboardSeconds)
+                                        val copied = ClipboardHelper.copySensitive(context, "历史密码", entry.password, clipboardSeconds)
                                         toast(
-                                            if (clipboardSeconds > 0) "已复制，将在 ${clipboardSeconds} 秒后清除"
+                                            if (!copied) "复制失败，请重试"
+                                            else if (clipboardSeconds > 0) "已复制，将在 ${clipboardSeconds} 秒后清除"
                                             else "已复制"
                                         )
                                     }
@@ -312,7 +337,7 @@ fun PasswordDetailScreen(
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        entry.password,
+                                        if (revealedHistoryId == entry.id) entry.password else "••••••••••••",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontFamily = FontFamily.Monospace
                                     )
@@ -321,6 +346,12 @@ fun PasswordDetailScreen(
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                }
+                                IconButton(onClick = {
+                                    revealedHistoryId = if (revealedHistoryId == entry.id) null else entry.id
+                                }) {
+                                    Icon(if (revealedHistoryId == entry.id) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (revealedHistoryId == entry.id) "隐藏历史密码" else "显示历史密码")
                                 }
                                 Icon(
                                     Icons.Filled.ContentCopy,
@@ -333,7 +364,7 @@ fun PasswordDetailScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showHistory = false; viewModel.clearHistory() }) { Text("关闭") }
+                TextButton(onClick = { showHistory = false; revealedHistoryId = null; viewModel.clearHistory() }) { Text("关闭") }
             }
         )
     }
@@ -370,7 +401,7 @@ private fun FieldRow(label: String, value: String, onCopy: (() -> Unit)?) {
         }
         if (onCopy != null) {
             IconButton(onClick = onCopy) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = "复制", tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Filled.ContentCopy, contentDescription = "复制$label", tint = MaterialTheme.colorScheme.primary)
             }
         }
     }

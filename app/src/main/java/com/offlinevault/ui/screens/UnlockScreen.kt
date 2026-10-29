@@ -12,6 +12,12 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
@@ -30,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.offlinevault.security.CredentialType
@@ -59,11 +66,12 @@ fun UnlockScreen(
     val shake = remember { Animatable(0f) }
     LaunchedEffect(state.shakeTrigger) {
         if (state.shakeTrigger > 0) {
-            val pattern = listOf(0f, -16f, 14f, -10f, 6f, 0f)
+            password = ""
+            reveal = false
+            val pattern = listOf(0f, -8f, 7f, -4f, 0f)
             for (target in pattern) {
                 shake.animateTo(target, tween(40))
             }
-            password = ""
         }
     }
 
@@ -84,13 +92,16 @@ fun UnlockScreen(
             .fillMaxSize()
             .systemBarsPadding()
             .imePadding()
+            .verticalScroll(rememberScrollState())
+            .wrapContentWidth()
+            .widthIn(max = 480.dp)
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         IconBadge(icon = Icons.Filled.Lock)
         Spacer(Modifier.height(16.dp))
-        Text("离线密码库", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("离线密码库", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
             if (riskScore.level == RiskLevel.HIGH) {
@@ -112,9 +123,14 @@ fun UnlockScreen(
                     onValueChange = { password = credentialType.sanitize(it) },
                     label = credentialType.displayName,
                     revealed = reveal,
+                    enabled = !state.isLoading,
+                    imeAction = ImeAction.Done,
+                    keyboardActions = KeyboardActions(onDone = {
+                        if (credentialType.isValid(password) && !state.isLoading && state.delaySeconds <= 0) onUnlock(password)
+                    }),
                     keyboardType = if (credentialType.isNumeric) KeyboardType.NumberPassword else KeyboardType.Password,
                     trailing = {
-                        TextButton(onClick = { reveal = !reveal }) {
+                        TextButton(onClick = { reveal = !reveal }, enabled = !state.isLoading) {
                             Text(if (reveal) "隐藏" else "显示")
                         }
                     }
@@ -125,10 +141,15 @@ fun UnlockScreen(
                 }
                 Spacer(Modifier.height(16.dp))
                 PrimaryButton(
-                    text = if (state.isLoading) "正在解锁…" else "解锁",
+                    text = when {
+                        state.isLoading -> "正在解锁…"
+                        state.delaySeconds > 0 -> "${state.delaySeconds} 秒后重试"
+                        else -> "解锁密码库"
+                    },
+                    loading = state.isLoading,
                     // Avoid a costly PBKDF2 attempt (and a failed-attempt penalty) for a
                     // partially entered PIN or too-short master password.
-                    enabled = credentialType.isValid(password) && !state.isLoading,
+                    enabled = credentialType.isValid(password) && !state.isLoading && state.delaySeconds <= 0,
                     onClick = { onUnlock(password) },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -146,7 +167,8 @@ fun UnlockScreen(
 
         if (biometricEnabled && riskScore.allowsBiometricOnly) {
             Spacer(Modifier.height(16.dp))
-            OutlinedButton(onClick = onBiometric, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+            OutlinedButton(onClick = onBiometric, enabled = !state.isLoading && state.delaySeconds <= 0,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
                 Icon(Icons.Filled.Fingerprint, contentDescription = null)
                 Spacer(Modifier.height(0.dp))
                 Text("  使用指纹解锁")
@@ -161,7 +183,7 @@ fun UnlockScreen(
         }
 
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onForgot) {
+        TextButton(onClick = onForgot, enabled = !state.isLoading) {
             Text("忘记${credentialType.noun}？", color = MaterialTheme.colorScheme.primary)
         }
     }
