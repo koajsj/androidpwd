@@ -4,18 +4,104 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 class SessionManagerTest {
+
+    @Test
+    fun recoveryCommitCannotCrossALockOrANewSession() {
+        val generation = SessionManager.beginRecovery(SessionManager.sessionGeneration)
+        var committed = false
+        SessionManager.withRecoveryCommit(generation) { committed = true }
+        assertTrue(committed)
+        SessionManager.lock()
+        assertThrows(VaultLockedException::class.java) {
+            SessionManager.withRecoveryCommit(generation) { error("Stale recovery must not commit") }
+        }
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        assertThrows(VaultLockedException::class.java) {
+            SessionManager.beginRecovery(generation)
+        }
+        assertTrue(SessionManager.isUnlocked)
+    }
+
+    @Test
+    fun aSlowObserverStillSeesTheLatestUnlockGeneration() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        val first = SessionManager.requireActiveSession()
+        val entered = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        val observed = CompletableDeferred<Long>()
+        val observer = launch(start = CoroutineStart.UNDISPATCHED) {
+            SessionManager.activeGeneration.collect { generation ->
+                if (generation == first) {
+                    entered.complete(Unit)
+                    resume.await()
+                } else if (generation != null) {
+                    observed.complete(generation)
+                }
+            }
+        }
+        try {
+            entered.await()
+            SessionManager.lock()
+            assertEquals(null, SessionManager.activeGeneration.value)
+            SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+            val latest = SessionManager.requireActiveSession()
+            resume.complete(Unit)
+            assertEquals(latest, withTimeout(1_000) { observed.await() })
+        } finally {
+            observer.cancel()
+        }
+    }
 
     @After
     fun tearDown() {
         SessionManager.lock()
+    }
+
+    @Test
+    fun admittedCredentialWriteCanFinishAfterLockWithoutReportingAFalseFailure() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        val admitted = CompletableDeferred<Unit>()
+        val finishPersistence = CompletableDeferred<Unit>()
+        val write = async(start = CoroutineStart.UNDISPATCHED) {
+            SessionManager.withCredentialWrite { generation ->
+                SessionManager.withActiveSessionNow(generation) { admitted.complete(Unit) }
+                finishPersistence.await()
+            }
+        }
+        admitted.await()
+        SessionManager.lock()
+        assertFalse(SessionManager.isUnlocked)
+        finishPersistence.complete(Unit)
+        withTimeout(1_000) { write.await() }
+        assertThrows(VaultLockedException::class.java) { SessionManager.requireKey() }
+        Unit
+    }
+
+    @Test
+    fun credentialWriteLockedBeforeAdmissionCannotMutateState() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        var mutated = false
+        assertThrows(VaultLockedException::class.java) {
+            runBlocking {
+                SessionManager.withCredentialWrite { generation ->
+                    SessionManager.lock()
+                    SessionManager.withActiveSessionNow(generation) { mutated = true }
+                }
+            }
+        }
+        assertFalse(mutated)
     }
 
     @Test
@@ -58,21 +144,6 @@ class SessionManagerTest {
         SessionManager.unlock(CryptoManager.newDataEncryptionKey())
         val result = SessionManager.withActiveSession { 42 }
         assertEquals(42, result)
-    }
-
-    @Test
-    fun activeSessionGenerationRejectsAResultAfterLock() = runBlocking {
-        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
-        val generation = SessionManager.requireActiveSession()
-        assertEquals("decrypted", SessionManager.withActiveSession {
-            SessionManager.requireActiveSession(generation)
-            "decrypted"
-        })
-        SessionManager.lock()
-        assertThrows(IllegalStateException::class.java) {
-            SessionManager.requireActiveSession(generation)
-        }
-        Unit
     }
 
     @Test

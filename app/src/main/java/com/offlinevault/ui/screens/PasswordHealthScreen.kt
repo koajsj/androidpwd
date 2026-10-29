@@ -34,7 +34,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.Lifecycle
@@ -131,7 +130,11 @@ fun PasswordHealthScreen(
                                 if (recovery.credentialType.isNumeric) Text("当前使用短 PIN：取得密钥包裹文件的攻击者可离线猜测。建议在设置中改用高熵主密码。",
                                     color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                                 Text("助记词：${if (recovery.mnemonic) "已配置" else "未配置或不可读取"}")
-                                Text("密保：${if (recovery.question) "已配置；请避免易猜答案" else "未配置或不可读取"}")
+                                Text(when (recovery.legacyAnswerPending) {
+                                    true -> "旧密保包装仍有离线猜测风险，请在设置中重新备份并确认助记词以移除。"
+                                    false -> "无旧密保包装；恢复仅依赖助记词。"
+                                    null -> "旧密保材料状态暂不可读取。"
+                                })
                                 Text(when (val at = recovery.lastBackupAt) {
                                     null -> "备份状态暂不可读取"
                                     0L -> "尚无本机导出记录（历史备份状态未知）"

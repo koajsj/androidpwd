@@ -1,5 +1,8 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -15,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +68,7 @@ fun MnemonicConfirmationContent(
                 Text("请离线抄写以下 12 个助记词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "仅展示这一次，关闭后无法再次查看。它只能在忘记主密码且忘记密保答案时，用于恢复数据加密密钥并重设主密码。",
+                    "仅展示这一次，关闭后无法再次查看。它只能用于恢复数据加密密钥并重设解锁凭据，不能用于日常解锁。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -181,7 +182,7 @@ private fun MnemonicWarningCallout() {
         verticalAlignment = Alignment.Top
     ) {
         Icon(
-            Icons.Filled.WarningAmber,
+            ImageVector.vectorResource(R.drawable.ic_warning_amber),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onErrorContainer
         )

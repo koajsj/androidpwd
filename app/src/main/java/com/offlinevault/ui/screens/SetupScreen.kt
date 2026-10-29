@@ -1,5 +1,7 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,11 +21,6 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,8 +39,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.offlinevault.security.CredentialType
-import com.offlinevault.security.KeyManager
 import com.offlinevault.security.MnemonicManager
 import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.ui.components.IconBadge
@@ -52,37 +50,34 @@ import com.offlinevault.ui.components.PrimaryButton
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.SecureWindowEffect
 import com.offlinevault.ui.components.StrengthMeter
-import com.offlinevault.ui.components.VaultTextField
 
 @Composable
 fun SetupScreen(
     setupError: String?,
     setupInProgress: Boolean,
     biometricAvailable: Boolean,
-    onCreate: (master: String, question: String, answer: String, mnemonicPhrase: String, enableBiometric: Boolean, type: CredentialType) -> Unit
+    onCreate: (master: String, mnemonicPhrase: String, enableBiometric: Boolean, type: CredentialType) -> Unit
 ) {
     val mnemonicManager = remember { MnemonicManager() }
     var credType by remember { mutableStateOf(CredentialType.PASSWORD) }
     var master by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    var question by remember { mutableStateOf("") }
-    var answer by remember { mutableStateOf("") }
     var enableBiometric by remember { mutableStateOf(false) }
     var revealMaster by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
     var pendingMnemonicWords by remember { mutableStateOf<List<String>?>(null) }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { revealMaster = false }
 
     // The initial recovery phrase is displayed only here; it must never be capturable even when
     // the user later chooses to disable the general screenshot-block setting.
     SecureWindowEffect(enabled = pendingMnemonicWords != null)
 
     val strength = remember(master) { PasswordStrengthChecker.evaluate(master) }
-    val canSubmit = credType.isValid(master) && confirm.isNotEmpty() &&
-        question.isNotBlank() &&
-        answer.trim().length >= KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
+    val canSubmit = credType.isValid(master) && confirm.isNotEmpty()
 
     fun setType(type: CredentialType) {
         credType = type
+        revealMaster = false
         master = ""
         confirm = ""
         localError = null
@@ -103,12 +98,12 @@ fun SetupScreen(
                 .padding(24.dp)
         ) {
             Spacer(Modifier.height(12.dp))
-            IconBadge(icon = Icons.Filled.Shield)
+            IconBadge(icon = ImageVector.vectorResource(R.drawable.ic_shield))
             Spacer(Modifier.height(16.dp))
             Text("保存恢复助记词", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             Text(
-                "助记词不会明文保存，也不能用于日常进入 App。它只在忘记主密码且忘记密保答案时，用于恢复密钥并重设主密码。",
+                "助记词不会明文保存，也不能用于日常进入 App。忘记解锁凭据时，它只能用于恢复密钥并重设凭据。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -123,8 +118,6 @@ fun SetupScreen(
                 onConfirm = {
                     onCreate(
                         master,
-                        question,
-                        answer,
                         words.joinToString(" "),
                         enableBiometric,
                         credType
@@ -147,12 +140,12 @@ fun SetupScreen(
             .padding(24.dp)
     ) {
         Spacer(Modifier.height(24.dp))
-        IconBadge(icon = Icons.Filled.Shield)
+        IconBadge(icon = ImageVector.vectorResource(R.drawable.ic_shield))
         Spacer(Modifier.height(16.dp))
         Text("设置密码库", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
-            "建议使用高熵主密码或长口令。应用不保存凭据；主密码、密保答案和助记词全部丢失后，数据将无法恢复。",
+            "建议使用高熵主密码或长口令。应用不保存凭据；解锁凭据和助记词全部丢失后，数据将无法恢复。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -215,24 +208,8 @@ fun SetupScreen(
                 Text("恢复访问", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "密保答案不区分大小写，请勿使用容易查到的个人信息；低熵答案可能被离线猜测。12 个随机助记词将在下一步生成，仅用于最终恢复，请离线备份。",
+                    "不使用容易被离线猜测的密保答案。下一步将生成 12 个随机助记词，请离线抄写并完成抽词确认。",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(12.dp))
-                VaultTextField(value = question, onValueChange = { question = it }, label = "安全问题")
-                Spacer(Modifier.height(12.dp))
-                PasswordVisualField(
-                    value = answer,
-                    onValueChange = { answer = it },
-                    label = "问题答案",
-                    revealed = false,
-                    keyboardType = KeyboardType.Password
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "答案至少 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符，避免使用姓名、生日等公开信息。",
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -247,7 +224,7 @@ fun SetupScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(ImageVector.vectorResource(R.drawable.ic_fingerprint), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Text("  启用指纹解锁（可选）", style = MaterialTheme.typography.bodyLarge)
                     }
                     Switch(checked = enableBiometric, onCheckedChange = { enableBiometric = it })
@@ -271,8 +248,6 @@ fun SetupScreen(
                         if (credType.isNumeric) "请输入${credType.minLength}位数字密码"
                         else "密码至少需要${credType.minLength}个字符"
                     master != confirm -> "两次输入的${credType.noun}不一致"
-                    answer.trim().length < KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH ->
-                        "安全问题答案至少需要 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符"
                     else -> null
                 }
                 if (localError == null) pendingMnemonicWords = mnemonicManager.generateWords()
@@ -313,8 +288,8 @@ private fun SegmentOption(label: String, selected: Boolean, modifier: Modifier =
 
 @Composable
 private fun RevealToggle(revealed: Boolean, onToggle: () -> Unit) {
-    val icon: ImageVector = if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
+    val icon: ImageVector = if (revealed) ImageVector.vectorResource(R.drawable.ic_visibility_off) else ImageVector.vectorResource(R.drawable.ic_visibility)
     IconButton(onClick = onToggle) {
-        Icon(icon, contentDescription = "切换显示状态", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(icon, contentDescription = if (revealed) "隐藏主密码" else "显示主密码", tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

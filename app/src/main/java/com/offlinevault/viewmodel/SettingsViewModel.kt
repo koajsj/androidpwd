@@ -9,8 +9,8 @@ import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.VaultEntity
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.VaultRepository
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
 import com.offlinevault.security.KeyManager
-import com.offlinevault.security.KeystoreManager
 import com.offlinevault.security.UnlockResult
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultLockedException
@@ -24,9 +24,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
-import java.security.InvalidKeyException
-import android.security.keystore.KeyPermanentlyInvalidatedException
 
 class SettingsViewModel(
     private val keyManager: KeyManager,
@@ -36,7 +35,7 @@ class SettingsViewModel(
 ) : ViewModel() {
 
     private var changeMasterJob: Job? = null
-    private var changeRecoveryJob: Job? = null
+    private var importJob: Job? = null
     private var verifyMasterJob: Job? = null
     private var changeMnemonicJob: Job? = null
     private var disableMnemonicJob: Job? = null
@@ -70,8 +69,8 @@ class SettingsViewModel(
     val clipboardClearSeconds: StateFlow<Int> =
         prefs.clipboardClearSecondsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, 10)
 
-    val recoveryQuestion: StateFlow<String> =
-        prefs.recoveryQuestionFlow.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val legacyAnswerPending: StateFlow<Boolean?> =
+        prefs.legacyAnswerPendingFlow.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val mnemonicEnabled: StateFlow<Boolean> =
         prefs.mnemonicEnabledFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -130,24 +129,6 @@ class SettingsViewModel(
                 throw e
             } catch (_: Exception) {
                 onResult(false, "无法修改密码")
-            }
-        }
-    }
-
-    fun changeRecovery(question: String, answer: String, onResult: (Boolean, String?) -> Unit) {
-        if (answer.trim().length < KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH) {
-            onResult(false, "安全问题答案至少需要 ${KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符")
-            return
-        }
-        if (changeRecoveryJob?.isActive == true) return
-        changeRecoveryJob = viewModelScope.launch {
-            try {
-                withContext(Dispatchers.Default) { keyManager.changeRecovery(question.trim(), answer) }
-                onResult(true, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                onResult(false, "无法更新安全问题")
             }
         }
     }
@@ -218,17 +199,11 @@ class SettingsViewModel(
     /** Builds an ENCRYPT cipher to enable biometric unlock. Null if Keystore key creation failed. */
     fun prepareEnableBiometricCipher(onReady: (Cipher?) -> Unit) {
         viewModelScope.launch {
-            // Do not delete a working key before the user actually completes the system prompt.
-            // Otherwise cancelling a re-enable attempt would silently break an already usable
-            // biometric unlock. Enrollment changes already invalidate the key at the Keystore
-            // level; only rebuild when the existing material can no longer initialise a Cipher.
             val cipher = withContext(Dispatchers.Default) {
                 try {
-                    KeystoreManager.encryptCipher()
-                } catch (_: KeyPermanentlyInvalidatedException) {
-                    runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
-                } catch (_: InvalidKeyException) {
-                    runCatching { KeystoreManager.recreateBiometricEncryptCipher() }.getOrNull()
+                    keyManager.biometricEncryptCipher()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     null
                 }
@@ -354,15 +329,34 @@ class SettingsViewModel(
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
         onResult: (ImportResult) -> Unit
     ) {
-        viewModelScope.launch {
+        if (importJob?.isActive == true) return
+        importJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
+            val completed = AtomicBoolean(false)
             val result = try {
-                withContext(Dispatchers.Default) { backupManager.importJsonBackup(content, password, strategy) }
+                withContext(Dispatchers.Default) { backupManager.importJsonBackup(content, password, strategy).also { completed.set(true) } }
             } catch (e: CancellationException) {
+                // The acknowledgement can be lost at the dispatcher boundary; never replay.
+                backupManager.requireImportResultReview(generation)
+                publishForSession(generation, {
+                    onResult(ImportResult(0, 0, 0, listOf(if (completed.get())
+                        "导入已返回结果，请核对列表，不要重复导入" else "导入结果未确认，请核对列表，不要重复导入")))
+                }, {})
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                backupManager.requireImportResultReview(generation)
+                ImportResult(0, 0, 0, listOf(requireNotNull(e.message)))
             } catch (_: Exception) {
                 ImportResult(0, 0, 0, listOf("导入失败，请检查文件后重试"))
             }
-            onResult(result)
+            try {
+                SessionManager.withActiveSessionNow(generation) {
+                    onResult(result)
+                    backupManager.acknowledgeImportResult(result)
+                }
+            } catch (_: VaultLockedException) {
+                // Suppress the result of a page belonging to an expired session.
+            }
         }
     }
 
@@ -372,15 +366,34 @@ class SettingsViewModel(
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP,
         onResult: (ImportResult) -> Unit
     ) {
-        viewModelScope.launch {
+        if (importJob?.isActive == true) return
+        importJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
+            val completed = AtomicBoolean(false)
             val result = try {
-                withContext(Dispatchers.Default) { backupManager.importChromeCsv(content, vaultId, strategy) }
+                withContext(Dispatchers.Default) { backupManager.importChromeCsv(content, vaultId, strategy).also { completed.set(true) } }
             } catch (e: CancellationException) {
+                // The acknowledgement can be lost at the dispatcher boundary; never replay.
+                backupManager.requireImportResultReview(generation)
+                publishForSession(generation, {
+                    onResult(ImportResult(0, 0, 0, listOf(if (completed.get())
+                        "导入已返回结果，请核对列表，不要重复导入" else "导入结果未确认，请核对列表，不要重复导入")))
+                }, {})
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                backupManager.requireImportResultReview(generation)
+                ImportResult(0, 0, 0, listOf(requireNotNull(e.message)))
             } catch (_: Exception) {
                 ImportResult(0, 0, 0, listOf("导入失败，请检查文件后重试"))
             }
-            onResult(result)
+            try {
+                SessionManager.withActiveSessionNow(generation) {
+                    onResult(result)
+                    backupManager.acknowledgeImportResult(result)
+                }
+            } catch (_: VaultLockedException) {
+                // Suppress the result of a page belonging to an expired session.
+            }
         }
     }
 

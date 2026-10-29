@@ -10,6 +10,7 @@ import com.offlinevault.security.RiskScore
 import com.offlinevault.security.RiskLevel
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.UnlockResult
+import com.offlinevault.security.VaultLockedException
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -53,8 +54,8 @@ class AuthViewModel(
     val biometricEnabled: StateFlow<Boolean> =
         prefs.biometricEnabledFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val recoveryQuestion: StateFlow<String> =
-        prefs.recoveryQuestionFlow.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val legacyAnswerPending: StateFlow<Boolean?> =
+        prefs.legacyAnswerPendingFlow.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val mnemonicEnabled: StateFlow<Boolean> =
         prefs.mnemonicEnabledFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -85,8 +86,6 @@ class AuthViewModel(
 
     fun setup(
         masterPassword: String,
-        recoveryQuestion: String,
-        recoveryAnswer: String,
         credentialType: CredentialType,
         mnemonicPhrase: String
     ) {
@@ -95,12 +94,13 @@ class AuthViewModel(
             _setupError.value = null
             _setupInProgress.value = true
             try {
-                prefs.setCredentialType(credentialType.key)
-                withContext(Dispatchers.Default) {
-                    keyManager.setup(masterPassword, recoveryQuestion.trim(), recoveryAnswer, mnemonicPhrase)
+                val unlocked = withContext(Dispatchers.Default) {
+                    keyManager.setup(masterPassword, mnemonicPhrase, credentialType)
                 }
-                withContext(Dispatchers.Default) {
-                    recordSuccessfulCredentialAuthenticationSafely()
+                if (unlocked) {
+                    withContext(Dispatchers.Default) {
+                        recordSuccessfulCredentialAuthenticationSafely()
+                    }
                 }
                 _setupError.value = null
             } catch (e: CancellationException) {
@@ -202,6 +202,10 @@ class AuthViewModel(
                 withContext(Dispatchers.Default) { keyManager.biometricDecryptCipher() }
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: VaultLockedException) {
+                // A lifecycle lock invalidates this prompt, not the enrolled Keystore key.
+                onReady(null)
+                return@launch
             } catch (e: Exception) {
                 null
             }
@@ -241,23 +245,6 @@ class AuthViewModel(
                 _unlockState.value = _unlockState.value.copy(errorMessage = "指纹解锁失败")
             }
             refreshRisk()
-        }
-    }
-
-    fun recover(answer: String, newMasterPassword: String, onResult: (Boolean, String?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                when (val result = withContext(Dispatchers.Default) { keyManager.recoverWithAnswer(answer, newMasterPassword) }) {
-                    is UnlockResult.Success -> onResult(true, "主密码已重置，请使用新主密码重新解锁")
-                    is UnlockResult.WrongCredential -> onResult(false, "安全问题答案错误")
-                    is UnlockResult.Delayed -> onResult(false, "尝试次数过多，请在 ${result.secondsRemaining} 秒后重试")
-                    is UnlockResult.Error -> onResult(false, result.message)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                onResult(false, "恢复失败")
-            }
         }
     }
 

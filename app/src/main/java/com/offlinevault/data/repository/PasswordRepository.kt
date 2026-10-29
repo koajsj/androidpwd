@@ -19,7 +19,6 @@ import com.offlinevault.security.VaultLockedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 import java.util.UUID
@@ -94,21 +93,6 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
                 }
             }
 
-    fun search(vaultId: String, query: String): Flow<List<PasswordEntity>> =
-        passwordsByVault(vaultId).map { rows ->
-            rows.filter { row ->
-                (listOf(row.title, row.username, row.url) + TagCodec.decode(row.tags))
-                    .any { it.contains(query, ignoreCase = true) }
-            }
-        }
-
-    fun byTag(vaultId: String, tag: String): Flow<List<PasswordEntity>> =
-        passwordsByVault(vaultId).map { rows ->
-            rows.filter { row ->
-                TagCodec.decode(row.tags).any { it.equals(tag, ignoreCase = true) }
-            }
-        }
-
     fun observe(id: String): Flow<PasswordEntity?> =
         passwordDao.observeById(id)
             .combine(SessionManager.unlocked) { row, unlocked ->
@@ -168,7 +152,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
         note: String,
         favorite: Boolean? = null,
         customFields: List<CustomField>? = null
-    ): String = DatabaseWriteGate.withWrite {
+    ): String = write {
         saveInternal(id, vaultId, title, username, password, url, tags, note, favorite, customFields)
     }
 
@@ -224,13 +208,14 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
             } else {
                 passwordDao.insert(entity)
             }
+            database?.vaultDao()?.touch(vaultId, now)
             entity.id
         }
     }
 
     /** Moves a credential to the recycle bin (soft delete) instead of erasing it immediately. */
     suspend fun deleteById(id: String) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 passwordDao.softDelete(id, System.currentTimeMillis())
             }
@@ -262,15 +247,16 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
             rows.size
         }
 
-    /** Session validation runs before Room commits, so lock/cancellation rolls the batch back. */
-    private suspend fun <T> batchWrite(block: suspend () -> T): T = DatabaseWriteGate.withWrite {
-        database?.withTransaction { SessionManager.withActiveSession { block() } }
-            ?: SessionManager.withActiveSession { block() }
-    }
+    private suspend fun <T> write(block: suspend () -> T): T = DatabaseWriteGate.withTransaction(
+        transaction = { action -> if (database != null) database.withTransaction { action() } else action() },
+        block = block
+    )
+
+    private suspend fun <T> batchWrite(block: suspend () -> T): T = write(block)
 
     /** Pins/unpins a credential. Favorites sort to the top of the list. */
     suspend fun setFavorite(id: String, favorite: Boolean) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession { passwordDao.setFavorite(id, favorite) }
         }
     }
@@ -290,14 +276,14 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
             }
 
     suspend fun restore(id: String) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession { passwordDao.restore(id) }
         }
     }
 
     /** Permanently erases a single trashed (or any) row by id. */
     suspend fun permanentlyDelete(id: String) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 passwordDao.getById(id)?.let { passwordDao.delete(it) }
             }
@@ -305,7 +291,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
     }
 
     suspend fun emptyTrash() {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession { passwordDao.emptyTrash() }
         }
     }
@@ -313,7 +299,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
     /** Auto-purge: erase trashed rows older than [retentionDays]. Called once per unlock. */
     suspend fun purgeExpiredTrash(retentionDays: Int = TRASH_RETENTION_DAYS) {
         val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession { passwordDao.purgeTrashedOlderThan(cutoff) }
         }
     }
@@ -368,7 +354,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
      * instead of creating a duplicate. [identifier] is a domain or an `androidapp://<package>` id.
      */
     suspend fun upsertFromAutofill(vaultId: String, identifier: String, username: String, password: String) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 val now = System.currentTimeMillis()
                 val existing = passwordDao.getPasswordsByVaultIdOnce(vaultId).firstOrNull { entity ->
@@ -393,6 +379,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
                         historyEntryIfChanged(existing, password),
                         HISTORY_KEEP
                     )
+                    database?.vaultDao()?.touch(vaultId, now)
                 } else {
                     saveInternal(
                         id = null,
@@ -509,7 +496,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
 
     /** Bulk insert used by import. Each [DecryptedPassword] is encrypted before storage. */
     suspend fun importDecrypted(vaultId: String, items: List<DecryptedPassword>): Int {
-        return DatabaseWriteGate.withWrite {
+        return write {
             SessionManager.withActiveSession {
                 val now = System.currentTimeMillis()
                 val entities = items.map { item ->
@@ -545,7 +532,7 @@ class PasswordRepository(private val passwordDao: PasswordDao, private val datab
     }
 
     suspend fun migrateLegacyEncryption() {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 passwordDao.getAllIncludingTrashedOnce().forEach { row ->
                     try {

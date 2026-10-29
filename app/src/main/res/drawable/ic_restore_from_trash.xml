@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adapted from AndroidX material-icons-extended 1.7.8, filled/RestoreFromTrash.kt.
+     Copyright 2025 The Android Open Source Project. Apache-2.0; see LICENSES/AndroidX-icons.txt. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FF000000"
+        android:pathData="M19.0 4.0 h-3.5 l-1.0 -1.0 h-5.0 l-1.0 1.0 L5.0 4.0 v2.0 h14.0 Z M6.0 7.0 v12.0 c0.0 1.1 0.9 2.0 2.0 2.0 h8.0 c1.1 0.0 2.0 -0.9 2.0 -2.0 L18.0 7.0 L6.0 7.0 Z M14.0 14.0 v4.0 h-4.0 v-4.0 L8.0 14.0 l4.0 -4.0 l4.0 4.0 h-2.0 Z" />
+</vector>

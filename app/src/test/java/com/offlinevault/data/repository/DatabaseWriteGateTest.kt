@@ -15,10 +15,100 @@ import org.junit.Assert.assertTrue
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultLockedException
+import org.junit.Assert.assertThrows
+import kotlinx.coroutines.CancellationException
 
 class DatabaseWriteGateTest {
     @Before fun unlock() { SessionManager.unlock(CryptoManager.newDataEncryptionKey()) }
     @After fun lock() { SessionManager.lock() }
+
+    @Test fun nullableResultDoesNotExecuteTheWriteTwice() = runBlocking {
+        var attempts = 0
+        val result: String? = DatabaseWriteGate.withTransaction(transaction = { action -> action() }) {
+            attempts++
+            null
+        }
+        assertEquals(null, result)
+        assertEquals(1, attempts)
+    }
+
+    @Test fun rollbackFailureCannotBeReportedAsDefinitelyRolledBack() = runBlocking {
+        val outcome = assertThrows(DatabaseWriteOutcomeException::class.java) {
+            runBlocking {
+                DatabaseWriteGate.withTransaction(transaction = { action ->
+                    try { action() } catch (_: Exception) { error("Synthetic rollback IO failure") }
+                }) { throw IllegalArgumentException("Synthetic body failure") }
+            }
+        }
+        assertFalse(outcome.committed)
+    }
+
+    @Test fun committedWriteIsNotReportedAsRolledBackWhenLockFollowsCommit() = runBlocking {
+        var persisted = 0
+        val outcome = assertThrows(DatabaseWriteOutcomeException::class.java) {
+            runBlocking {
+                DatabaseWriteGate.withTransaction(
+                    transaction = { action -> action().also { SessionManager.lock() } }
+                ) { persisted++; "not publishable after lock" }
+            }
+        }
+        assertTrue(outcome.committed)
+        assertEquals(1, persisted)
+    }
+
+    @Test fun lockInsideTransactionRollsBackBeforeCommitValidation() = runBlocking {
+        var persisted = 0
+        assertThrows(VaultLockedException::class.java) {
+            runBlocking {
+                DatabaseWriteGate.withTransaction(
+                    transaction = { action ->
+                        val before = persisted
+                        try { action() } catch (e: Exception) { persisted = before; throw e }
+                    }
+                ) { persisted++; SessionManager.lock() }
+            }
+        }
+        assertEquals(0, persisted)
+    }
+
+    @Test fun exceptionInsideTransactionIsNotMislabelledAsAnUnknownCommit() = runBlocking {
+        val failure = IllegalArgumentException("synthetic constraint failure")
+        val caught = runCatching {
+            DatabaseWriteGate.withTransaction(transaction = { action -> action() }) { throw failure }
+        }.exceptionOrNull()
+        assertTrue(caught === failure)
+    }
+
+    @Test fun cancellationAfterCompletedBodyHasAnExplicitUnknownOutcome() = runBlocking {
+        val outcome = assertThrows(DatabaseWriteOutcomeException::class.java) {
+            runBlocking {
+                DatabaseWriteGate.withTransaction(
+                    transaction = { action -> action(); throw CancellationException("No commit acknowledgement") }
+                ) { 42 }
+            }
+        }
+        assertFalse(outcome.committed)
+        assertTrue(outcome.cause is CancellationException)
+    }
+
+    @Test fun nestedRepositoryCallsUseOneCommitAndNoIndependentReceipt() = runBlocking {
+        var commits = 0
+        val result = DatabaseWriteGate.withTransaction(transaction = { action -> action().also { commits++ } }) {
+            DatabaseWriteGate.withTransaction(transaction = { error("Must reuse outer transaction") }) { 42 }
+        }
+        assertEquals(42, result)
+        assertEquals(1, commits)
+    }
+
+    @Test fun unknownOutcomeIsNotAutomaticallyRetried() = runBlocking {
+        var attempts = 0
+        runCatching {
+            DatabaseWriteGate.withTransaction(transaction = { action -> action(); error("Commit IO failed") }) {
+                attempts++
+            }
+        }.onFailure { assertTrue(it is DatabaseWriteOutcomeException) }
+        assertEquals(1, attempts)
+    }
 
     @Test fun queuedWriterCannotBorrowANewSession() = runBlocking {
         val entered = CompletableDeferred<Unit>()

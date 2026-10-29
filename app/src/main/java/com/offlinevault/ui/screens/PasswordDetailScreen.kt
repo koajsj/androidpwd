@@ -1,7 +1,9 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,11 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -205,7 +204,7 @@ fun PasswordDetailScreen(
                         }
                         IconButton(onClick = { reveal = !reveal }, enabled = hasPassword) {
                             Icon(
-                                if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                if (reveal) ImageVector.vectorResource(R.drawable.ic_visibility_off) else ImageVector.vectorResource(R.drawable.ic_visibility),
                                 contentDescription = if (reveal) "隐藏密码" else "显示密码",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -218,7 +217,7 @@ fun PasswordDetailScreen(
                                 else "密码已复制"
                             )
                         }, enabled = hasPassword) {
-                            Icon(Icons.Filled.ContentCopy, contentDescription = "复制密码", tint = MaterialTheme.colorScheme.primary)
+                            Icon(ImageVector.vectorResource(R.drawable.ic_content_copy), contentDescription = "复制密码", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                     if (strength != null) {
@@ -360,11 +359,11 @@ fun PasswordDetailScreen(
                                 IconButton(onClick = {
                                     revealedHistoryId = if (revealedHistoryId == entry.id) null else entry.id
                                 }) {
-                                    Icon(if (revealedHistoryId == entry.id) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    Icon(if (revealedHistoryId == entry.id) ImageVector.vectorResource(R.drawable.ic_visibility_off) else ImageVector.vectorResource(R.drawable.ic_visibility),
                                         contentDescription = if (revealedHistoryId == entry.id) "隐藏历史密码" else "显示历史密码")
                                 }
                                 Icon(
-                                    Icons.Filled.ContentCopy,
+                                    ImageVector.vectorResource(R.drawable.ic_content_copy),
                                     contentDescription = "复制",
                                     tint = MaterialTheme.colorScheme.primary
                                 )
@@ -411,7 +410,7 @@ private fun FieldRow(label: String, value: String, onCopy: (() -> Unit)?) {
         }
         if (onCopy != null) {
             IconButton(onClick = onCopy) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = "复制$label", tint = MaterialTheme.colorScheme.primary)
+                Icon(ImageVector.vectorResource(R.drawable.ic_content_copy), contentDescription = "复制$label", tint = MaterialTheme.colorScheme.primary)
             }
         }
     }

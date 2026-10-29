@@ -121,10 +121,11 @@ object CryptoManager {
 
     /** Derives a key according to an explicitly persisted [KdfSpec]. */
     fun deriveKey(password: CharArray, salt: ByteArray, spec: KdfSpec): SecretKey {
-        require(salt.size == SALT_LENGTH) { "Invalid salt length" }
-        require(spec.version == KdfVersions.PBKDF2_HMAC_SHA256_V1) { "Unsupported KDF version" }
-        val pbeSpec = PBEKeySpec(password, salt, requireValidIterations(spec.iterations), AES_KEY_BITS)
+        var pbeSpec: PBEKeySpec? = null
         try {
+            require(salt.size == SALT_LENGTH) { "Invalid salt length" }
+            require(spec.version == KdfVersions.PBKDF2_HMAC_SHA256_V1) { "Unsupported KDF version" }
+            pbeSpec = PBEKeySpec(password, salt, requireValidIterations(spec.iterations), AES_KEY_BITS)
             val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
             val keyBytes = factory.generateSecret(pbeSpec).encoded
             try {
@@ -133,7 +134,7 @@ object CryptoManager {
                 keyBytes.fill(0)
             }
         } finally {
-            pbeSpec.clearPassword()
+            pbeSpec?.clearPassword()
             password.fill('\u0000')
         }
     }

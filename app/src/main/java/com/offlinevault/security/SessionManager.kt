@@ -23,6 +23,9 @@ object SessionManager {
 
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked
+    private val _activeGeneration = MutableStateFlow<Long?>(null)
+    /** Unlike a Boolean, the latest unlock cannot be conflated with an earlier unlocked session. */
+    val activeGeneration: StateFlow<Long?> = _activeGeneration
 
     val isUnlocked: Boolean get() = _unlocked.value
     /** Changes on every lock and unlock, so short-lived authorizations cannot cross sessions. */
@@ -41,8 +44,9 @@ object SessionManager {
             }
             if (dek !== key) CryptoManager.destroyKey(dek)
             dek = key
-            sessionGenerationCounter.incrementAndGet()
+            val generation = sessionGenerationCounter.incrementAndGet()
             _unlocked.value = true
+            _activeGeneration.value = generation
         } finally {
             changingSession = false
             sessionChanged.signalAll()
@@ -59,7 +63,31 @@ object SessionManager {
             changingSession = true
             sessionGenerationCounter.incrementAndGet()
             _unlocked.value = false
+            _activeGeneration.value = null
             if (activeOperations == 0) clearLockedKey()
+        } finally {
+            sessionLock.unlock()
+        }
+    }
+
+    /** Recovery owns a locked generation, not an unlocked session or a reusable unlock token. */
+    internal fun beginRecovery(expectedGeneration: Long): Long {
+        sessionLock.lock()
+        try {
+            if (sessionGeneration != expectedGeneration) throw VaultLockedException("Recovery expired")
+            lock()
+            return sessionGeneration
+        } finally {
+            sessionLock.unlock()
+        }
+    }
+
+    /** Admission only: an edit already admitted may finish after a later lifecycle lock. */
+    internal fun withRecoveryCommit(expectedGeneration: Long, block: () -> Unit) {
+        sessionLock.lock()
+        try {
+            if (isUnlocked || sessionGeneration != expectedGeneration) throw VaultLockedException("Recovery expired")
+            block()
         } finally {
             sessionLock.unlock()
         }
@@ -109,6 +137,23 @@ object SessionManager {
      * transaction must put this gate inside its transaction so invalidation rolls it back.
      */
     suspend fun <T> withActiveSession(block: suspend () -> T): T {
+        return withPinnedSession(validateResult = true) { block() }
+    }
+
+    /**
+     * Credential writes admit their mutation inside DataStore.edit via withActiveSessionNow.
+     * An admitted write may finish after lock; do not report that committed write as a failure.
+     * This API returns no sensitive result and is not a replacement for guarded reads.
+     */
+    internal suspend fun withCredentialWrite(block: suspend (Long) -> Unit) {
+        withPinnedSession(validateResult = false, block)
+    }
+
+    /** The database gate validates inside its transaction, not after a successful commit. */
+    internal suspend fun <T> withDatabaseWrite(block: suspend () -> T): T =
+        withPinnedSession(validateResult = false) { block() }
+
+    private suspend fun <T> withPinnedSession(validateResult: Boolean, block: suspend (Long) -> T): T {
         val generation: Long
         sessionLock.lock()
         try {
@@ -119,7 +164,7 @@ object SessionManager {
             sessionLock.unlock()
         }
         return try {
-            block().also { requireActiveSession(generation) }
+            block(generation).also { if (validateResult) requireActiveSession(generation) }
         } finally {
             sessionLock.lock()
             try {

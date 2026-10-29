@@ -9,6 +9,7 @@ import com.offlinevault.data.model.CustomField
 import com.offlinevault.data.model.CustomFieldCodec
 import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.DatabaseWriteGate
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.security.CryptoManager
@@ -26,6 +27,8 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.SecretKey
 import kotlin.coroutines.coroutineContext
 
@@ -104,6 +107,25 @@ class BackupManager(
     // JSON import may be launched from both the list and settings flows. Serialise the full
     // read/index/write operation so simultaneous taps cannot calculate duplicates from stale data.
     private val importMutex = Mutex()
+    private val importReviewGeneration = AtomicLong(-1)
+    private data class PendingImportResult(val generation: Long, val receipt: Long)
+    private val nextImportReceipt = AtomicLong(0)
+    private val pendingImportResult = AtomicReference<PendingImportResult?>(null)
+
+    /** Shared by both import screens; never replay an unacknowledged operation in this session. */
+    internal fun requireImportResultReview(generation: Long) {
+        importReviewGeneration.updateAndGet { maxOf(it, generation) }
+    }
+
+    internal fun acknowledgeImportResult(result: ImportResult) {
+        val pending = pendingImportResult.get() ?: return
+        if (result.commitReceipt != 0L && pending.receipt == result.commitReceipt) {
+            pendingImportResult.compareAndSet(pending, null)
+        }
+    }
+
+    private fun importNeedsReview(generation: Long): Boolean =
+        importReviewGeneration.get() == generation || pendingImportResult.get()?.generation == generation
 
     // ---- JSON export (encrypted) ------------------------------------------
 
@@ -252,6 +274,8 @@ class BackupManager(
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     ): ImportResult = importMutex.withLock {
         val generation = SessionManager.requireActiveSession()
+        if (importNeedsReview(generation)) return ImportResult(0, 0, 0,
+            listOf("上次导入结果需核对，请先查看密码库，再锁定并重新解锁后继续导入"))
         val backupData: BackupData
         val prepared: PreparedImport
         try {
@@ -269,7 +293,7 @@ class BackupManager(
             return ImportResult(0, 0, 0, listOf("无法读取备份：密码错误或文件已损坏"))
         }
 
-        return importInTransaction {
+        return importInTransaction(generation) {
             SessionManager.requireActiveSession(generation)
             val vaultsById = vaultRepository.allOnce().associateBy { it.id }.toMutableMap()
             for (vault in backupData.vaults) {
@@ -331,6 +355,8 @@ class BackupManager(
         strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP
     ): ImportResult = importMutex.withLock {
         val generation = SessionManager.requireActiveSession()
+        if (importNeedsReview(generation)) return ImportResult(0, 0, 0,
+            listOf("上次导入结果需核对，请先查看密码库，再锁定并重新解锁后继续导入"))
         val prepared = try {
             prepareCsvImport(content, targetVaultId)
         } catch (e: CancellationException) {
@@ -345,7 +371,7 @@ class BackupManager(
         if (prepared.candidates.isEmpty()) {
             return ImportResult(0, 0, prepared.invalidItems, listOf("没有可导入的有效项目"))
         }
-        return importInTransaction {
+        return importInTransaction(generation) {
             SessionManager.requireActiveSession(generation)
             val effectiveTargetVaultId = resolveCsvImportVaultId(
                 prepared = prepared,
@@ -504,10 +530,7 @@ class BackupManager(
         val sampleTitles = mutableListOf<String>()
 
         for ((vaultId, vaultItems) in prepared.candidates.groupBy { it.vaultId }) {
-            val seen = existingByVault[vaultId]
-                ?.mapValues { (_, value) -> value.toMutableList() }
-                ?.toMutableMap()
-                ?: mutableMapOf()
+            val seen = existingByVault[vaultId] ?: mutableMapOf()
             for (candidate in vaultItems) {
                 coroutineContext.ensureActive()
                 if (findMatchingExisting(seen, candidate) != null) {
@@ -547,13 +570,9 @@ class BackupManager(
         val candidatesByVault = prepared.candidates.groupBy { it.vaultId }
         for ((vaultId, vaultCandidates) in candidatesByVault) {
             try {
-                val existingByKey = buildCandidateIndex(passwordRepository.decryptedForVaultSkippingCorrupt(vaultId))
-
                 when (strategy) {
                     ImportConflictStrategy.SKIP -> {
-                        val seen = existingByKey
-                            .mapValues { (_, value) -> value.toMutableList() }
-                            .toMutableMap()
+                        val seen = buildCandidateIndex(passwordRepository.decryptedForVaultSkippingCorrupt(vaultId))
                         val toInsert = mutableListOf<DecryptedPassword>()
                         for (candidate in vaultCandidates) {
                             coroutineContext.ensureActive()
@@ -576,9 +595,7 @@ class BackupManager(
                     }
 
                     ImportConflictStrategy.OVERWRITE -> {
-                        val seen = existingByKey
-                            .mapValues { (_, value) -> value.toMutableList() }
-                            .toMutableMap()
+                        val seen = buildCandidateIndex(passwordRepository.decryptedForVaultSkippingCorrupt(vaultId))
                         val pendingCreates = linkedMapOf<String, DecryptedPassword>()
                         var tempCounter = 0
 
@@ -592,7 +609,7 @@ class BackupManager(
                                     skipped++
                                     val replacement = candidate.toDecrypted(existing.id)
                                     pendingCreates[existing.id] = replacement
-                                    removeIndexedExisting(seen, existing.id)
+                                    removeIndexedExisting(seen, existing)
                                     indexExisting(seen, replacement)
                                 } else {
                                     try {
@@ -609,7 +626,7 @@ class BackupManager(
                                             customFields = candidate.customFields
                                         )
                                         updated++
-                                        removeIndexedExisting(seen, existing.id)
+                                        removeIndexedExisting(seen, existing)
                                         indexExisting(seen, candidate.toDecrypted(existing.id))
                                     } catch (e: CancellationException) {
                                         throw e
@@ -687,8 +704,8 @@ class BackupManager(
 
     private suspend fun existingIndexByVault(
         vaultIds: List<String>
-    ): Map<String, Map<String, List<DecryptedPassword>>> {
-        val result = mutableMapOf<String, Map<String, List<DecryptedPassword>>>()
+    ): Map<String, MutableMap<String, MutableList<DecryptedPassword>>> {
+        val result = mutableMapOf<String, MutableMap<String, MutableList<DecryptedPassword>>>()
         for (vaultId in vaultIds.distinct().filterNot { it == NEW_IMPORT_VAULT_PLACEHOLDER }) {
             result[vaultId] = buildCandidateIndex(passwordRepository.decryptedForVaultSkippingCorrupt(vaultId))
         }
@@ -717,11 +734,24 @@ class BackupManager(
      * back both the newly-created vault and its credential writes. JVM tests use in-memory DAOs
      * and intentionally exercise the same import logic without a Room database.
      */
-    private suspend fun <T> importInTransaction(block: suspend () -> T): T =
-        DatabaseWriteGate.withWrite {
-            database?.withTransaction { SessionManager.withActiveSession { block() } }
-                ?: SessionManager.withActiveSession { block() }
+    private suspend fun importInTransaction(generation: Long, block: suspend () -> ImportResult): ImportResult {
+        try {
+            val result = DatabaseWriteGate.withTransaction(
+                transaction = { action -> if (database != null) database.withTransaction { action() } else action() },
+                block = block
+            )
+            val receipt = nextImportReceipt.incrementAndGet()
+            // Still inside importMutex: another entry point cannot pass before UI delivery.
+            pendingImportResult.set(PendingImportResult(generation, receipt))
+            return result.copy(commitReceipt = receipt)
+        } catch (e: DatabaseWriteOutcomeException) {
+            requireImportResultReview(generation)
+            throw e
+        } catch (e: CancellationException) {
+            requireImportResultReview(generation)
+            throw e
         }
+    }
 
     /**
      * The JSON-backup UI is exclusively for encrypted Offline Vault wrappers. Keeping the wrapper
@@ -812,11 +842,11 @@ class BackupManager(
         "备份结构无效"
     }
 
-    private fun DecryptedPassword.matchKeys(): Set<String> =
-        buildMatchKeys(username, password, url)
+    private fun DecryptedPassword.matchKey(): String? =
+        buildMatchKey(username, password, url)
 
-    private fun ImportCandidate.matchKeys(): Set<String> =
-        buildMatchKeys(username, password, url)
+    private fun ImportCandidate.matchKey(): String? =
+        buildMatchKey(username, password, url)
 
     private fun buildCandidateIndex(items: List<DecryptedPassword>): MutableMap<String, MutableList<DecryptedPassword>> {
         val index = linkedMapOf<String, MutableList<DecryptedPassword>>()
@@ -828,68 +858,59 @@ class BackupManager(
         index: MutableMap<String, MutableList<DecryptedPassword>>,
         item: DecryptedPassword
     ) {
-        item.matchKeys().forEach { key ->
-            index.getOrPut(key) { mutableListOf() }.apply {
-                if (none { it.id == item.id }) add(item)
-            }
+        val key = item.matchKey() ?: return
+        index.getOrPut(key) { mutableListOf() }.apply {
+            if (none { it.id == item.id }) add(item)
         }
     }
 
     private fun removeIndexedExisting(
         index: MutableMap<String, MutableList<DecryptedPassword>>,
-        id: String
+        item: DecryptedPassword
     ) {
-        val keysToRemove = mutableListOf<String>()
-        index.forEach { (key, value) ->
-            value.removeAll { it.id == id }
-            if (value.isEmpty()) keysToRemove += key
-        }
-        keysToRemove.forEach(index::remove)
+        val key = item.matchKey() ?: return
+        val bucket = index[key] ?: return
+        bucket.removeAll { it.id == item.id }
+        if (bucket.isEmpty()) index.remove(key)
     }
 
     private fun indexCandidate(
         index: MutableMap<String, MutableList<DecryptedPassword>>,
         candidate: ImportCandidate
     ) {
-        val temp = candidate.toDecrypted()
-        candidate.matchKeys().forEach { key ->
-            index.getOrPut(key) { mutableListOf() }.add(temp)
-        }
+        val key = candidate.matchKey() ?: return
+        index.getOrPut(key) { mutableListOf() }.add(candidate.toDecrypted())
     }
 
     private fun findMatchingExisting(
         index: Map<String, List<DecryptedPassword>>,
         candidate: ImportCandidate
     ): DecryptedPassword? {
-        val keyed = candidate.matchKeys()
-            .flatMap { index[it].orEmpty() }
-            .distinctBy { it.id.ifBlank { "candidate:${System.identityHashCode(it)}" } }
-        return keyed.firstOrNull { isSameCredential(it, candidate) }
+        val key = candidate.matchKey() ?: return null
+        return index[key]?.firstOrNull { isSameCredential(it, candidate) }
     }
 
     private fun isSameCredential(existing: DecryptedPassword, candidate: ImportCandidate): Boolean {
-        val existingUser = existing.username.normalizedUser()
-        val candidateUser = candidate.username.normalizedUser()
+        val existingUser = existing.username.trim()
+        val candidateUser = candidate.username.trim()
         if (existingUser != candidateUser) return false
 
-        val existingHost = comparableTarget(existing.url)
-        val candidateHost = comparableTarget(candidate.url)
+        val existingHost = OriginMatcher.canonicalTarget(existing.url)
+        val candidateHost = OriginMatcher.canonicalTarget(candidate.url)
         if (existingHost == null || candidateHost == null || existingHost != candidateHost) return false
         if (existingUser.isNotEmpty()) return true
         return existing.password.isNotEmpty() && existing.password == candidate.password
     }
 
-    private fun buildMatchKeys(username: String, password: String, url: String): Set<String> {
-        val user = username.normalizedUser()
-        val host = comparableTarget(url)
-        return buildSet {
-            if (user.isNotEmpty() && host != null) add("host:$host|user:$user")
-            if (user.isEmpty() && host != null && password.isNotEmpty()) add("host:$host|empty-user")
+    private fun buildMatchKey(username: String, password: String, url: String): String? {
+        val user = username.trim()
+        val host = OriginMatcher.canonicalTarget(url) ?: return null
+        return when {
+            user.isNotEmpty() -> "host:$host|user:$user"
+            password.isNotEmpty() -> "host:$host|empty-user"
+            else -> null
         }
     }
-
-    private fun comparableTarget(url: String): String? =
-        OriginMatcher.canonicalTarget(url)
 
     private fun normalizeHeader(value: String): String =
         value.trim().trim('\uFEFF').lowercase(Locale.ROOT).replace(" ", "_").replace("-", "_")
@@ -898,8 +919,6 @@ class BackupManager(
         val wanted = candidates.map(::normalizeHeader).toSet()
         return indexOfFirst { it in wanted }
     }
-
-    private fun String.normalizedUser(): String = trim()
 
     private fun isValidImportItem(item: BackupItem): Boolean = try {
         item.vaultId.isNotBlank() &&

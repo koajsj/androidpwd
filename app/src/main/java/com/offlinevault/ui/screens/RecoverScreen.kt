@@ -1,5 +1,9 @@
 package com.offlinevault.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,13 +16,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,16 +46,13 @@ import java.util.Locale
 
 @Composable
 fun RecoverScreen(
-    question: String,
     credentialType: CredentialType,
     mnemonicEnabled: Boolean,
-    onRecoverByAnswer: (answer: String, newPassword: String, onResult: (Boolean, String?) -> Unit) -> Unit,
+    legacyAnswerPending: Boolean?,
     onRecoverByMnemonic: (mnemonic: String, newPassword: String, onResult: (Boolean, String?) -> Unit) -> Unit,
     onBack: () -> Unit
 ) {
     val mnemonicManager = remember { MnemonicManager() }
-    var mode by remember { mutableStateOf(0) }
-    var answer by remember { mutableStateOf("") }
     var mnemonic by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -64,12 +61,12 @@ fun RecoverScreen(
 
     val keyboardType = if (credentialType.isNumeric) KeyboardType.NumberPassword else KeyboardType.Password
     val strength = remember(newPassword) { PasswordStrengthChecker.evaluate(newPassword) }
-    val canSubmit = when (mode) {
-        0 -> answer.isNotBlank() && credentialType.isValid(newPassword) && confirm.isNotEmpty()
-        else -> mnemonic.isNotBlank() && credentialType.isValid(newPassword) && confirm.isNotEmpty()
-    }
+    val canSubmit = mnemonicEnabled && mnemonic.isNotBlank() &&
+        credentialType.isValid(newPassword) && confirm.isNotEmpty()
 
-    SecureWindowEffect(enabled = mode == 1)
+    SecureWindowEffect(enabled = true)
+    // Returning is not cancellation once a credential replacement has been submitted.
+    BackHandler(enabled = working) { }
 
     Column(
         Modifier
@@ -81,11 +78,11 @@ fun RecoverScreen(
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        IconButton(onClick = onBack) {
+        IconButton(onClick = onBack, enabled = !working) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
         }
         Spacer(Modifier.height(8.dp))
-        IconBadge(icon = Icons.Filled.RestartAlt)
+        IconBadge(icon = ImageVector.vectorResource(R.drawable.ic_restart_alt))
         Spacer(Modifier.height(16.dp))
         Text("恢复访问", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
@@ -96,35 +93,19 @@ fun RecoverScreen(
         )
         Spacer(Modifier.height(24.dp))
 
-        if (mnemonicEnabled) {
-            TabRow(selectedTabIndex = mode) {
-                Tab(selected = mode == 0, onClick = { mode = 0 }, text = { Text("密保问题") })
-                Tab(selected = mode == 1, onClick = { mode = 1 }, text = { Text("12 个助记词") })
-            }
-            Spacer(Modifier.height(12.dp))
-        }
-
         SectionCard {
             Column {
-                if (mode == 0) {
-                    Text("安全问题", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        question.ifBlank { "未设置安全问题" },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(14.dp))
-                    PasswordVisualField(
-                        value = answer,
-                        onValueChange = { answer = it },
-                        label = "你的答案",
-                        revealed = false,
-                        keyboardType = KeyboardType.Password
-                    )
-                } else {
+                if (mnemonicEnabled) {
                     Text("12 个助记词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
+                    if (legacyAnswerPending == true) {
+                        Text(
+                            "成功恢复后将移除旧密保包装；当前助记词继续有效。这不会撤销已复制的历史包装。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                     Text(
                         "请输入完整 12 个英文单词，单词之间用空格分隔。错误时不会提示具体单词位置。",
                         style = MaterialTheme.typography.bodyMedium,
@@ -135,8 +116,15 @@ fun RecoverScreen(
                         value = mnemonic,
                         onValueChange = { mnemonic = it.lowercase(Locale.ROOT) },
                         label = "助记词",
+                        enabled = !working,
                         singleLine = false
                     )
+                } else {
+                    Text(when (legacyAnswerPending) {
+                        null -> "恢复配置暂不可读取，请返回后重试。"
+                        true -> "此版本不再支持密保答案恢复。旧文件未被删除；请使用原解锁凭据解锁后备份助记词。若凭据和助记词均丢失，此版本无法恢复。"
+                        false -> "未配置可用的恢复方式。若仍可解锁，请在设置中备份助记词；所有凭据丢失后无法恢复。"
+                    })
                 }
             }
         }
@@ -152,6 +140,7 @@ fun RecoverScreen(
                     onValueChange = { newPassword = credentialType.sanitize(it) },
                     label = "新${credentialType.displayName}",
                     revealed = false,
+                    enabled = !working,
                     keyboardType = keyboardType
                 )
                 if (credentialType == CredentialType.PASSWORD) {
@@ -164,6 +153,7 @@ fun RecoverScreen(
                     onValueChange = { confirm = credentialType.sanitize(it) },
                     label = "确认${credentialType.noun}",
                     revealed = false,
+                    enabled = !working,
                     keyboardType = keyboardType
                 )
             }
@@ -184,7 +174,7 @@ fun RecoverScreen(
                         if (credentialType.isNumeric) "请输入${credentialType.minLength}位数字密码"
                         else "密码至少需要${credentialType.minLength}个字符"
                     newPassword != confirm -> "两次输入的${credentialType.noun}不一致"
-                    mode == 1 && !mnemonicManager.isValidPhrase(mnemonic) -> "请输入完整有效的 12 个助记词"
+                    !mnemonicManager.isValidPhrase(mnemonic) -> "请输入完整有效的 12 个助记词"
                     else -> null
                 }
                 if (error == null) {
@@ -193,18 +183,19 @@ fun RecoverScreen(
                     // On success, return to the unlock screen so the user signs in with the new one.
                     val callback = { success: Boolean, message: String? ->
                         working = false
-                        if (success) onBack() else error = message
+                        if (success) {
+                            mnemonic = ""
+                            newPassword = ""
+                            confirm = ""
+                            onBack()
+                        } else error = message
                     }
-                    if (mode == 0) {
-                        onRecoverByAnswer(answer, newPassword, callback)
-                    } else {
-                        onRecoverByMnemonic(mnemonic, newPassword, callback)
-                    }
+                    onRecoverByMnemonic(mnemonic, newPassword, callback)
                 }
             },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onBack) { Text("返回解锁") }
+        TextButton(onClick = onBack, enabled = !working) { Text("返回解锁") }
     }
 }

@@ -1,5 +1,8 @@
 package com.offlinevault.ui.components
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,8 +16,9 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -79,7 +83,7 @@ fun PasswordGeneratorSheet(
         copyFailed = false
     }
 
-    val strength = PasswordStrengthChecker.evaluate(generated)
+    val strength = remember(generated) { PasswordStrengthChecker.evaluate(generated) }
     val enabledClassCount = listOf(
         options.useUpper,
         options.useLower,
@@ -126,7 +130,7 @@ fun PasswordGeneratorSheet(
                             copied = ClipboardHelper.copySensitive(context, "生成的密码", generated, 10)
                             copyFailed = !copied
                         }) {
-                            Icon(if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                            Icon(if (copied) Icons.Filled.Check else ImageVector.vectorResource(R.drawable.ic_content_copy),
                                 contentDescription = if (copied) "已复制，10 秒后清除" else "复制密码",
                                 tint = MaterialTheme.colorScheme.primary)
                         }
@@ -214,11 +218,12 @@ fun PasswordGeneratorSheet(
 @Composable
 private fun ToggleRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(end = 12.dp))
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

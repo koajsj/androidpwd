@@ -23,6 +23,45 @@ import org.junit.Before
 import org.junit.Test
 
 class BackupManagerTest {
+    private suspend fun importJsonAndAcknowledge(content: String, backupPassword: String,
+        strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP): ImportResult =
+        manager.importJsonBackup(content, backupPassword, strategy).also(manager::acknowledgeImportResult)
+
+    private suspend fun importCsvAndAcknowledge(content: String, targetVaultId: String,
+        strategy: ImportConflictStrategy = ImportConflictStrategy.SKIP): ImportResult =
+        manager.importChromeCsv(content, targetVaultId, strategy).also(manager::acknowledgeImportResult)
+
+    @Test fun completedImportBlocksOtherEntryPointsUntilItsOwnReceiptIsDelivered() = runBlocking {
+        val csv = "name,url,username,password\nSynthetic,https://synthetic.example,user,synthetic-secret\n"
+        val first = manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH)
+        assertEquals(1, first.imported)
+        assertTrue(manager.importJsonBackup("{}", "synthetic-backup").errors.single().contains("核对"))
+        assertEquals(0, manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH).imported)
+        manager.acknowledgeImportResult(first)
+        val second = manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH)
+        assertEquals(1, second.imported)
+        manager.acknowledgeImportResult(first) // a late acknowledgement cannot clear the second receipt
+        assertEquals(0, manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH).imported)
+        assertEquals(2, passwordDao.getAllOnce().size)
+        manager.acknowledgeImportResult(second)
+    }
+    @Test fun unacknowledgedImportCannotBeReplayedAcrossEntryPointsOrClearedByAnOldSession() = runBlocking {
+        val generation = SessionManager.requireActiveSession()
+        manager.requireImportResultReview(generation)
+        val csv = "name,url,username,password\nSynthetic,https://synthetic.example,user,synthetic-secret\n"
+        assertTrue(manager.importJsonBackup("{}", "synthetic-backup").errors.single().contains("核对"))
+        assertEquals(0, manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH).imported)
+        assertEquals(0, passwordDao.getAllOnce().size)
+        val raw = SessionManager.requireKey().encoded
+        val sameKey = try { CryptoManager.keyFromBytes(raw) } finally { raw.fill(0) }
+        SessionManager.lock()
+        SessionManager.unlock(sameKey)
+        assertEquals(1, manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH).imported)
+        manager.requireImportResultReview(SessionManager.requireActiveSession())
+        manager.requireImportResultReview(generation) // a late callback cannot clear a newer guard
+        assertEquals(0, manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH).imported)
+        assertEquals(1, passwordDao.getAllOnce().size)
+    }
     @Test fun customFieldsRoundTripAndWrongRecordBindingAreEnforced() = runBlocking {
         val vault = vaultRepository.create("Synthetic", "lock")
         val fields = listOf(com.offlinevault.data.model.CustomField(label = "Recovery", value = "synthetic-recovery-code"),
@@ -43,9 +82,8 @@ class BackupManagerTest {
         assertEquals(2, wrapper["version"].asInt)
         assertEquals("", wrapper["integrityHash"].asString)
         assertEquals(0, manager.previewJsonBackup(encrypted, "SyntheticBackupPassword").invalidItems)
-        assertThrows(Exception::class.java) { runBlocking { manager.previewJsonBackup(encrypted, "wrong") } }
         val csv = manager.buildCsvForVault(vault.id)
-        val csvResult = manager.importChromeCsv(csv, "", ImportConflictStrategy.KEEP_BOTH)
+        val csvResult = importCsvAndAcknowledge(csv, "", ImportConflictStrategy.KEEP_BOTH)
         assertEquals(1, csvResult.imported)
         assertTrue(passwordRepository.allDecryptedSkippingCorrupt().all { it.customFields == fields })
         assertThrows(IllegalArgumentException::class.java) { runBlocking { manager.buildCsvForVault(vault.id, true) } }
@@ -85,7 +123,7 @@ class BackupManagerTest {
         val vault = vaultRepository.create("Synthetic", "lock")
         passwordRepository.save(null, vault.id, "Original", "User", "first", "https://example.com", emptyList(), "")
         val csv = "name,url,username,password\nSecond,https://example.com,user,second\nThird,https://www.example.com,User,third"
-        assertEquals(2, manager.importChromeCsv(csv, vault.id, ImportConflictStrategy.OVERWRITE).imported)
+        assertEquals(2, importCsvAndAcknowledge(csv, vault.id, ImportConflictStrategy.OVERWRITE).imported)
         assertEquals(3, passwordRepository.decryptedForVault(vault.id).size)
     }
 
@@ -93,7 +131,7 @@ class BackupManagerTest {
         val vault = vaultRepository.create("Synthetic", "lock")
         passwordRepository.upsertFromAutofill(vault.id, "androidapp://com.Example.App", "user", "old")
         val csv = "name,url,username,password\nExact,androidapp://com.Example.App,user,new\nOther,androidapp://com.example.app,user,other"
-        val result = manager.importChromeCsv(csv, vault.id, ImportConflictStrategy.OVERWRITE)
+        val result = importCsvAndAcknowledge(csv, vault.id, ImportConflictStrategy.OVERWRITE)
         assertEquals(1, result.updated)
         assertEquals(1, result.imported)
     }
@@ -180,7 +218,7 @@ class BackupManagerTest {
     @Test fun csvImportPreservesSignificantPasswordWhitespace() = runBlocking {
         val vault = vaultRepository.create("个人", "lock")
         val csv = "name,url,username,password\nExample,https://example.com,user,\"  secret  \""
-        val result = manager.importChromeCsv(csv, vault.id)
+        val result = importCsvAndAcknowledge(csv, vault.id)
         assertEquals(1, result.imported)
         assertEquals("  secret  ", passwordRepository.decryptedForVault(vault.id).single().password)
     }
@@ -190,7 +228,7 @@ class BackupManagerTest {
         passwordRepository.save(null, vault.id, "Example", "", "secret", "https://example.com", emptyList(), "")
         val csv = "name,url,username,password\nExample,https://example.com,,\" secret \""
         assertEquals(1, manager.previewChromeCsv(csv, vault.id).newItems)
-        assertEquals(1, manager.importChromeCsv(csv, vault.id).imported)
+        assertEquals(1, importCsvAndAcknowledge(csv, vault.id).imported)
         assertEquals(2, passwordRepository.decryptedForVault(vault.id).size)
     }
 
@@ -198,9 +236,6 @@ class BackupManagerTest {
         val emptyVault = vaultRepository.create("空密码库", "lock")
         val emptyBackup = manager.buildEncryptedJsonBackup("backup-pass")
         assertEquals(0, manager.previewJsonBackup(emptyBackup, "backup-pass").totalItems)
-        assertThrows(Exception::class.java) {
-            runBlocking { manager.previewJsonBackup(emptyBackup, "wrong-pass") }
-        }
 
         passwordRepository.save(
             id = null,
@@ -220,6 +255,22 @@ class BackupManagerTest {
         assertEquals(0, preview.invalidItems)
     }
 
+    @Test fun keepBothImportDoesNotReadExistingCredentials() = runBlocking {
+        val vault = vaultRepository.create("Synthetic", "lock")
+        val noReads = object : PasswordDao by passwordDao {
+            override suspend fun getPasswordsByVaultIdOnce(vaultId: String): List<PasswordEntity> =
+                error("KEEP_BOTH must not query or decrypt existing credentials")
+        }
+        val importer = BackupManager(vaultRepository, PasswordRepository(noReads))
+        val result = importer.importChromeCsv(
+            "name,url,username,password\nExample,https://example.com,user,synthetic",
+            vault.id, ImportConflictStrategy.KEEP_BOTH
+        )
+        assertEquals(1, result.imported)
+        assertEquals(0, result.failed)
+        assertEquals("synthetic", passwordRepository.getDecrypted(passwordDao.getAllOnce().single().id)?.password)
+    }
+
     @Test fun overwriteImportAccountsForDuplicateRowsWithinCsv() = runBlocking {
         val vault = vaultRepository.create("个人", "lock")
         val csv = """
@@ -233,7 +284,7 @@ class BackupManagerTest {
         assertEquals(1, preview.newItems)
         assertEquals(1, preview.duplicateItems)
 
-        val result = manager.importChromeCsv(csv, vault.id, ImportConflictStrategy.OVERWRITE)
+        val result = importCsvAndAcknowledge(csv, vault.id, ImportConflictStrategy.OVERWRITE)
         assertEquals(1, result.imported)
         assertEquals(1, result.skippedDuplicates)
         assertEquals(0, result.updated)
@@ -263,7 +314,7 @@ class BackupManagerTest {
         assertEquals(1, preview.newItems)
         assertEquals(0, preview.duplicateItems)
 
-        val result = manager.importChromeCsv(csv, vault.id, ImportConflictStrategy.SKIP)
+        val result = importCsvAndAcknowledge(csv, vault.id, ImportConflictStrategy.SKIP)
         assertEquals(1, result.imported)
         assertEquals(0, result.skippedDuplicates)
         assertEquals(2, passwordDao.getPasswordsByVaultIdOnce(vault.id).size)
@@ -280,7 +331,7 @@ class BackupManagerTest {
         assertThrows(Exception::class.java) {
             runBlocking { manager.previewJsonBackup(encrypted, "incorrect-pass") }
         }
-        val result = manager.importJsonBackup(plainJson, "backup-pass")
+        val result = importJsonAndAcknowledge(plainJson, "backup-pass")
         assertEquals(0, result.imported)
         assertTrue(result.errors.single().contains("加密备份"))
     }
@@ -425,7 +476,7 @@ class BackupManagerTest {
             Valid,https://valid.example,user,secret
         """.trimIndent()
 
-        val result = manager.importChromeCsv(csv, vault.id)
+        val result = importCsvAndAcknowledge(csv, vault.id)
 
         assertEquals(1, result.imported)
         assertEquals(1, result.failed)
@@ -456,6 +507,10 @@ class BackupManagerTest {
 
     private class InMemoryVaultDao : VaultDao {
         private val rows = MutableStateFlow<List<VaultEntity>>(emptyList())
+
+        override suspend fun touch(id: String, updatedAt: Long) {
+            rows.value = rows.value.map { if (it.id == id) it.copy(updatedAt = updatedAt) else it }
+        }
 
         override suspend fun insert(vault: VaultEntity) {
             rows.value = rows.value.filterNot { it.id == vault.id } + vault

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adapted from AndroidX material-icons-extended 1.7.8, filled/AutoMode.kt.
+     Copyright 2025 The Android Open Source Project. Apache-2.0; see LICENSES/AndroidX-icons.txt. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FF000000"
+        android:pathData="M19.03 3.56 c-1.67 -1.39 -3.74 -2.3 -6.03 -2.51 v2.01 c1.73 0.19 3.31 0.88 4.61 1.92 L19.03 3.56 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M11.0 3.06 V1.05 C8.71 1.25 6.64 2.17 4.97 3.56 l1.42 1.42 C7.69 3.94 9.27 3.25 11.0 3.06 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M4.98 6.39 L3.56 4.97 C2.17 6.64 1.26 8.71 1.05 11.0 h2.01 C3.25 9.27 3.94 7.69 4.98 6.39 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M20.94 11.0 h2.01 c-0.21 -2.29 -1.12 -4.36 -2.51 -6.03 l-1.42 1.42 C20.06 7.69 20.75 9.27 20.94 11.0 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M7.0 12.0 l3.44 1.56 l1.56 3.44 l1.56 -3.44 l3.44 -1.56 l-3.44 -1.56 l-1.56 -3.44 l-1.56 3.44 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M12.0 21.0 c-3.11 0.0 -5.85 -1.59 -7.46 -4.0 H7.0 v-2.0 H1.0 v6.0 h2.0 v-2.7 c1.99 2.84 5.27 4.7 9.0 4.7 c4.87 0.0 9.0 -3.17 10.44 -7.56 l-1.96 -0.45 C19.25 18.48 15.92 21.0 12.0 21.0 Z" />
+</vector>

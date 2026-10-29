@@ -2,6 +2,8 @@ package com.offlinevault.data.repository
 
 import com.offlinevault.data.dao.VaultDao
 import com.offlinevault.data.model.VaultEntity
+import com.offlinevault.data.db.AppDatabase
+import androidx.room.withTransaction
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultLockedException
@@ -12,7 +14,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import java.util.UUID
 
-class VaultRepository(private val vaultDao: VaultDao) {
+class VaultRepository(private val vaultDao: VaultDao, private val database: AppDatabase? = null) {
+
+    private suspend fun <T> write(block: suspend () -> T): T = DatabaseWriteGate.withTransaction(
+        transaction = { action -> if (database != null) database.withTransaction { action() } else action() },
+        block = block
+    )
 
     // Vault names are encrypted metadata. Decrypt the complete switcher list away from Compose's
     // main thread so a large multi-vault import does not hitch navigation or settings rendering.
@@ -37,7 +44,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
         }
 
     suspend fun create(name: String, icon: String): VaultEntity =
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 val id = UUID.randomUUID().toString()
                 val vault = VaultEntity(
@@ -52,7 +59,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
 
     /** Renames a vault without exposing its display name in the database. */
     suspend fun rename(id: String, name: String): VaultEntity? =
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 val existing = vaultDao.getById(id) ?: return@withActiveSession null
                 val updated = existing.copy(
@@ -68,7 +75,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
      * Deletes one vault and its credentials through Room's foreign-key cascade. At least one
      * vault is always retained, so callers never end up with an unusable empty destination.
      */
-    suspend fun deleteKeepingOne(id: String): VaultDeleteResult = DatabaseWriteGate.withWrite {
+    suspend fun deleteKeepingOne(id: String): VaultDeleteResult = write {
         SessionManager.withActiveSession {
             val vaults = vaultDao.getAllVaultsOnce()
             val target = vaults.firstOrNull { it.id == id } ?:
@@ -82,7 +89,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     suspend fun touch(vaultId: String) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 vaultDao.getById(vaultId)?.let {
                     vaultDao.update(it.copy(updatedAt = System.currentTimeMillis()))
@@ -92,7 +99,7 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     /** Ensures there is always at least one vault to put credentials into. */
-    suspend fun ensureDefault(): VaultEntity = DatabaseWriteGate.withWrite {
+    suspend fun ensureDefault(): VaultEntity = write {
         SessionManager.withActiveSession {
             vaultDao.firstVault()?.let { return@withActiveSession decrypt(it) }
             val id = UUID.randomUUID().toString()
@@ -107,14 +114,14 @@ class VaultRepository(private val vaultDao: VaultDao) {
     }
 
     suspend fun insertImported(vault: VaultEntity) {
-        DatabaseWriteGate.withWrite {
+        write {
             SessionManager.withActiveSession {
                 vaultDao.insert(vault.copy(name = EncryptedField.encrypt(vault.name, nameContext(vault.id))))
             }
         }
     }
 
-    suspend fun migrateLegacyMetadata() = DatabaseWriteGate.withWrite {
+    suspend fun migrateLegacyMetadata() = write {
         SessionManager.withActiveSession {
             vaultDao.getAllVaultsOnce().forEach { row ->
                 // Isolate a single damaged vault name the same way credential migration isolates a

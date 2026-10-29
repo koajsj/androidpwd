@@ -6,6 +6,39 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class CryptoManagerTest {
+    @Test fun successfulDerivationStillProducesUsableKeysAndClearsThePassword() {
+        val salt = CryptoManager.newSalt()
+        val firstPassword = "synthetic-test-passphrase".toCharArray()
+        val secondPassword = firstPassword.copyOf()
+        val first = CryptoManager.deriveKey(firstPassword, salt, CryptoManager.MIN_PBKDF2_ITERATIONS)
+        val second = CryptoManager.deriveKey(secondPassword, salt, CryptoManager.MIN_PBKDF2_ITERATIONS)
+        try {
+            assertArrayEquals(CharArray(firstPassword.size), firstPassword)
+            assertArrayEquals(CharArray(secondPassword.size), secondPassword)
+            val encrypted = CryptoManager.encryptString(first, "synthetic payload", "synthetic aad")
+            assertEquals("synthetic payload", CryptoManager.decryptString(second, encrypted, "synthetic aad"))
+        } finally {
+            salt.fill(0)
+            CryptoManager.destroyKey(first)
+            CryptoManager.destroyKey(second)
+        }
+    }
+
+    @Test fun rejectedKdfInputsStillClearTheSuppliedPassword() {
+        val cases = listOf(
+            ByteArray(0) to KdfVersions.current(),
+            ByteArray(CryptoManager.SALT_LENGTH) to KdfSpec("unsupported", 300_000),
+            ByteArray(CryptoManager.SALT_LENGTH) to KdfVersions.current(1)
+        )
+        cases.forEach { (salt, spec) ->
+            val password = "synthetic-secret".toCharArray()
+            assertThrows(IllegalArgumentException::class.java) {
+                CryptoManager.deriveKey(password, salt, spec)
+            }
+            assertArrayEquals(CharArray(password.size), password)
+        }
+    }
+
     @Test fun acceptsSupportedPbkdf2IterationCounts() {
         assertEquals(
             CryptoManager.DEFAULT_PBKDF2_ITERATIONS,

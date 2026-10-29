@@ -1,5 +1,8 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +22,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -172,7 +174,7 @@ fun UnlockScreen(
             Spacer(Modifier.height(16.dp))
             OutlinedButton(onClick = onBiometric, enabled = !state.isLoading && state.delaySeconds <= 0,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
-                Icon(Icons.Filled.Fingerprint, contentDescription = null)
+                Icon(ImageVector.vectorResource(R.drawable.ic_fingerprint), contentDescription = null)
                 Spacer(Modifier.height(0.dp))
                 Text("  使用指纹解锁")
             }

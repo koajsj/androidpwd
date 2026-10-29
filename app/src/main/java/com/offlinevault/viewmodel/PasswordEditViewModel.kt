@@ -3,6 +3,8 @@ package com.offlinevault.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
+import java.util.concurrent.atomic.AtomicBoolean
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.data.model.TagCodec
 import com.offlinevault.data.model.CustomField
@@ -144,8 +146,10 @@ class PasswordEditViewModel(
         }
         saveJob = viewModelScope.launch {
             _isSaving.value = true
+            val generation = SessionManager.sessionGeneration
+            val committed = AtomicBoolean(false)
             try {
-                val generation = SessionManager.requireActiveSession()
+                SessionManager.requireActiveSession(generation)
                 val tags = TagCodec.normalize(f.tags.lines())
                 withContext(Dispatchers.Default) {
                     SessionManager.requireActiveSession(generation)
@@ -160,14 +164,36 @@ class PasswordEditViewModel(
                         note = f.note,
                         customFields = f.customFields
                     )
-                    vaultRepository.touch(f.vaultId)
+                    // Survives prompt cancellation while dispatching the result back to Main.
+                    committed.set(true)
                 }
                 SessionManager.withActiveSessionNow(generation) {
                     initialForm.value = f
                     onResult(true, null)
                 }
             } catch (e: CancellationException) {
+                if (committed.get()) {
+                    try {
+                        SessionManager.withActiveSessionNow(generation) {
+                            _isReady.value = false
+                            _errorMessage.value = "操作已保存，请返回列表核对，不要重复保存"
+                        }
+                    } catch (_: com.offlinevault.security.VaultLockedException) {
+                        // The old form has already been cleared on lock.
+                    }
+                }
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                // An uncertain insert must be reconciled from the list, not retried with a new ID.
+                try {
+                    SessionManager.withActiveSessionNow(generation) {
+                        _isReady.value = false
+                        onResult(false, e.message)
+                    }
+                } catch (_: com.offlinevault.security.VaultLockedException) {
+                }
+            } catch (_: com.offlinevault.security.VaultLockedException) {
+                // Never deliver a late result into a subsequent authentication session.
             } catch (_: Exception) {
                 onResult(false, "保存失败，请重新解锁后重试")
             } finally {

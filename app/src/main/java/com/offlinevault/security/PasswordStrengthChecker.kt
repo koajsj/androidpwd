@@ -64,8 +64,12 @@ object PasswordStrengthChecker {
         val warnings = mutableListOf<String>()
         var score = 0
 
-        val characteristics = characteristics(password)
-        val length = characteristics.length
+        // Reject known weak values before scanning character classes and allocating a set.
+        if (password.lowercase(Locale.ROOT) in COMMON_WEAK) {
+            return StrengthResult(5, StrengthLevel.HIGH_RISK, listOf("这是非常常见的弱密码"))
+        }
+
+        val length = password.length
         val hasLower = password.any { it in 'a'..'z' }
         val hasUpper = password.any { it in 'A'..'Z' }
         val hasDigit = password.any { it.isDigit() }
@@ -73,12 +77,6 @@ object PasswordStrengthChecker {
         val onlyDigits = password.all { it.isDigit() }
         val onlyLetters = password.all { it.isLetter() }
         val distinct = password.toSet().size
-
-        // Immediate fail for a known weak password.
-        if (characteristics.isCommonWeakPassword) {
-            warnings.add("这是非常常见的弱密码")
-            return StrengthResult(5, StrengthLevel.HIGH_RISK, warnings)
-        }
 
         // Length scoring (max 40).
         score += when {
@@ -123,12 +121,7 @@ object PasswordStrengthChecker {
 
         score = score.coerceIn(0, 100)
 
-        val level = when {
-            score < 40 -> StrengthLevel.HIGH_RISK
-            score < 70 -> StrengthLevel.MEDIUM_RISK
-            else -> StrengthLevel.LOW_RISK
-        }
-        return StrengthResult(score, level, warnings)
+        return StrengthResult(score, levelFor(score), warnings)
     }
 
     /** Detects runs of 3+ ascending or descending consecutive characters. */

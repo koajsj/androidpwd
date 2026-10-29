@@ -1,5 +1,8 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,8 +16,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -107,8 +108,8 @@ fun TrashScreen(
                         TrashRow(
                             item = item,
                             onRestore = {
-                                viewModel.restore(item.id) { ok ->
-                                    toast(if (ok) "已恢复" else "恢复失败")
+                                viewModel.restore(item.id) { ok, message ->
+                                    toast(if (ok) "已恢复" else message ?: "恢复失败")
                                 }
                             },
                             onDelete = { confirmDelete = item }
@@ -128,7 +129,7 @@ fun TrashScreen(
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = null
-                    viewModel.deleteForever(target.id) { ok -> if (!ok) toast("删除失败") }
+                    viewModel.deleteForever(target.id) { ok, message -> if (!ok) toast(message ?: "删除失败") }
                 }) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("取消") } }
@@ -143,7 +144,7 @@ fun TrashScreen(
             confirmButton = {
                 TextButton(onClick = {
                     confirmEmpty = false
-                    viewModel.emptyTrash { ok -> if (!ok) toast("操作失败") }
+                    viewModel.emptyTrash { ok, message -> if (!ok) toast(message ?: "操作失败") }
                 }) { Text("全部永久删除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmEmpty = false }) { Text("取消") } }
@@ -176,10 +177,10 @@ private fun TrashRow(item: PasswordEntity, onRestore: () -> Unit, onDelete: () -
                 )
             }
             IconButton(onClick = onRestore) {
-                Icon(Icons.Filled.RestoreFromTrash, contentDescription = "恢复", tint = MaterialTheme.colorScheme.primary)
+                Icon(ImageVector.vectorResource(R.drawable.ic_restore_from_trash), contentDescription = "恢复", tint = MaterialTheme.colorScheme.primary)
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.DeleteForever, contentDescription = "永久删除", tint = MaterialTheme.colorScheme.error)
+                Icon(ImageVector.vectorResource(R.drawable.ic_delete_forever), contentDescription = "永久删除", tint = MaterialTheme.colorScheme.error)
             }
         }
     }

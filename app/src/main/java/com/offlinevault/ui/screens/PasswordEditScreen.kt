@@ -1,7 +1,9 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,9 +18,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AutoMode
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -144,13 +143,13 @@ fun PasswordEditScreen(
                             Row {
                                 IconButton(onClick = { reveal = !reveal }, enabled = editable) {
                                     Icon(
-                                        if (reveal) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        if (reveal) ImageVector.vectorResource(R.drawable.ic_visibility_off) else ImageVector.vectorResource(R.drawable.ic_visibility),
                                         contentDescription = if (reveal) "隐藏密码" else "显示密码",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 IconButton(onClick = { showGenerator = true }, enabled = editable) {
-                                    Icon(Icons.Filled.AutoMode, contentDescription = "生成密码", tint = MaterialTheme.colorScheme.primary)
+                                    Icon(ImageVector.vectorResource(R.drawable.ic_auto_mode), contentDescription = "生成密码", tint = MaterialTheme.colorScheme.primary)
                                 }
                             }
                         }
@@ -161,7 +160,7 @@ fun PasswordEditScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = { showGenerator = true }, enabled = editable) {
-                        Icon(Icons.Filled.AutoMode, contentDescription = null)
+                        Icon(ImageVector.vectorResource(R.drawable.ic_auto_mode), contentDescription = null)
                         Text("  生成强密码")
                     }
                 }

@@ -31,31 +31,18 @@ class OriginMatcherTest {
         assertTrue(OriginMatcher.matches("https://example.com:443/path", "example.com"))
         assertTrue(OriginMatcher.matches("https://bücher.example", "xn--bcher-kva.example"))
     }
-    @Test fun exactHostMatches() {
+    @Test fun exactHostMatchingRejectsPhishingSubdomainsAndMissingOrigins() {
         assertTrue(OriginMatcher.matches("https://accounts.example.com/login", "accounts.example.com"))
-    }
-
-    @Test fun phishingSuffixDoesNotMatch() {
         assertFalse(OriginMatcher.matches("https://accounts.example.com", "accounts.example.com.evil.test"))
-    }
-
-    @Test fun parentAndSubdomainDoNotCrossMatch() {
         assertFalse(OriginMatcher.matches("https://example.com", "login.example.com"))
         assertFalse(OriginMatcher.matches("https://login.example.com", "example.com"))
-    }
-
-    @Test fun missingOriginNeverMatches() {
         assertFalse(OriginMatcher.matches("https://example.com", null))
     }
 
-    @Test fun appIdentifierMatchesSamePackage() {
+    @Test fun appIdentifiersRequireTheSameNonNullPackage() {
         val id = OriginMatcher.appIdentifier("com.example.app")
         assertTrue(OriginMatcher.matchesApp(id, "com.example.app"))
         assertFalse(OriginMatcher.matchesApp("com.example.app", "com.example.app"))
-    }
-
-    @Test fun appIdentifierRejectsDifferentPackageAndNull() {
-        val id = OriginMatcher.appIdentifier("com.example.app")
         assertFalse(OriginMatcher.matchesApp(id, "com.other.app"))
         assertFalse(OriginMatcher.matchesApp(id, null))
     }
@@ -67,12 +54,8 @@ class OriginMatcherTest {
         assertFalse(OriginMatcher.sameTarget(a, "com.other.app"))
         assertTrue(OriginMatcher.sameTarget("https://example.com/login", "example.com"))
         assertFalse(OriginMatcher.sameTarget("https://example.com", a))
-    }
-
-    @Test fun webRequestsNeverMatchAppIdentifiers() {
-        val appId = OriginMatcher.appIdentifier("com.example.app")
-        assertFalse(OriginMatcher.matches(appId, "com.example.app"))
-        assertFalse(OriginMatcher.sameTarget("https://com.example.app", appId))
+        assertFalse(OriginMatcher.matches(a, "com.example.app"))
+        assertFalse(OriginMatcher.sameTarget("https://com.example.app", a))
     }
 
     @Test fun webTargetLabelAlsoNamesRequestingPackage() {

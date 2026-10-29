@@ -63,5 +63,7 @@ data class ImportResult(
     val skippedDuplicates: Int,
     val failed: Int,
     val errors: List<String>,
-    val updated: Int = 0
+    val updated: Int = 0,
+    /** In-process acknowledgement only; never included in backup files or persisted. */
+    internal val commitReceipt: Long = 0
 )

@@ -12,15 +12,6 @@ class CsvUtilsTest {
         assertEquals("'\t@danger", CsvUtils.escape("\t@danger"))
     }
 
-    @Test fun parsesQuotedFieldsAndNewlines() {
-        val rows = CsvUtils.parse(
-            "name,note\n\"示例\",\"第一行\n第二行\"\n"
-        )
-
-        assertEquals(listOf("name", "note"), rows[0])
-        assertEquals(listOf("示例", "第一行\n第二行"), rows[1])
-    }
-
     @Test fun rejectsUnterminatedQuotedField() {
         assertThrows(IllegalArgumentException::class.java) {
             CsvUtils.parse("name,password\n\"broken,value")
@@ -36,7 +27,9 @@ class CsvUtilsTest {
         }
     }
 
-    @Test fun parsesEscapedQuotesEmptyFieldsAndCrLf() {
+    @Test fun parsesQuotedMultilineFieldsEscapedQuotesAndBothLineEndings() {
+        assertEquals(listOf(listOf("name", "note"), listOf("示例", "第一行\n第二行")),
+            CsvUtils.parse("name,note\n\"示例\",\"第一行\n第二行\"\n"))
         val rows = CsvUtils.parse("name,note,empty\r\n\"示\"\"例\",\"a\r\nb\",\r\n")
 
         assertEquals(listOf("name", "note", "empty"), rows[0])

@@ -18,6 +18,9 @@ interface VaultDao {
     @Update
     suspend fun update(vault: VaultEntity)
 
+    @Query("UPDATE vaults SET updatedAt = :updatedAt WHERE id = :id")
+    suspend fun touch(id: String, updatedAt: Long)
+
     @Delete
     suspend fun delete(vault: VaultEntity)
 

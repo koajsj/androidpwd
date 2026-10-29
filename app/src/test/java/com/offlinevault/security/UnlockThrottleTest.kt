@@ -4,11 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class UnlockThrottleTest {
-    @Test fun firstFailuresAreNotDelayed() {
-        assertEquals(0, UnlockThrottle.remainingSeconds(2, 1_000, 1_000))
-    }
-
     @Test fun delayStartsAtThirdFailureAndDoubles() {
+        assertEquals(0, UnlockThrottle.remainingSeconds(2, 1_000, 1_000))
         assertEquals(5, UnlockThrottle.remainingSeconds(3, 10_000, 10_000))
         assertEquals(10, UnlockThrottle.remainingSeconds(4, 10_000, 10_000))
         assertEquals(20, UnlockThrottle.remainingSeconds(5, 10_000, 10_000))

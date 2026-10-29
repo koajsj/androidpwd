@@ -9,6 +9,8 @@ import com.offlinevault.data.backup.ImportResult
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.data.preferences.SecurityPreferences
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
+import com.offlinevault.security.VaultLockedException
 import com.offlinevault.data.model.TagCodec
 import com.offlinevault.data.repository.VaultDeleteResult
 import com.offlinevault.data.repository.VaultRepository
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Locale
 
 /** List ordering options. Favorites always pin above these. */
@@ -66,6 +69,14 @@ class PasswordListViewModel(
             } catch (_: Exception) {
                 // Non-critical UI preference; ignore persistence failures.
             }
+        }
+    }
+
+    private fun publishForSession(generation: Long, block: () -> Unit) {
+        try {
+            SessionManager.withActiveSessionNow(generation, block)
+        } catch (_: VaultLockedException) {
+            // Results from an old page must not alter a subsequent session.
         }
     }
 
@@ -103,6 +114,7 @@ class PasswordListViewModel(
     // Vault mutations are destructive or change the active destination. Keep them serial so a
     // rapid double-tap cannot create duplicate vaults or race a deletion against a rename.
     private var vaultMutationJob: Job? = null
+    private var importJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -140,12 +152,13 @@ class PasswordListViewModel(
     val tiaomu: StateFlow<List<PasswordEntity>> =
         combine(currentVaultRows, chaxunFangdou, biaoqianGuolv, paixu, filter) { rows, cxWen, biaoqian, sort, selectedFilter ->
             // A tag and a typed query are independent filters.
+            val query = cxWen.trim()
             rows.asSequence()
                 .filter { selectedFilter == ListFilter.ALL ||
                     selectedFilter == ListFilter.FAVORITES && it.favorite ||
                     selectedFilter == ListFilter.WEAK && it.strengthScore < 40 }
                 .filter { item -> biaoqian == null || item.hasTag(biaoqian) }
-                .filter { item -> cxWen.isBlank() || item.matchesQuery(cxWen) }
+                .filter { item -> query.isEmpty() || item.matchesQuery(query) }
                 .toList()
                 .let { sortItems(it, sort) }
             }
@@ -171,11 +184,9 @@ class PasswordListViewModel(
     private fun PasswordEntity.hasTag(tag: String): Boolean =
         TagCodec.decode(tags).any { it.equals(tag, ignoreCase = true) }
 
-    private fun PasswordEntity.matchesQuery(query: String): Boolean {
-        val normalizedQuery = query.trim()
-        return (listOf(title, username, url) + TagCodec.decode(tags))
-            .any { it.contains(normalizedQuery, ignoreCase = true) }
-    }
+    private fun PasswordEntity.matchesQuery(query: String): Boolean =
+        title.contains(query, ignoreCase = true) || username.contains(query, ignoreCase = true) ||
+            url.contains(query, ignoreCase = true) || TagCodec.decode(tags).any { it.contains(query, ignoreCase = true) }
 
     // ---- Selection (batch operations) ----
     private val xuanzhong = MutableStateFlow<Set<String>>(emptySet())
@@ -198,12 +209,22 @@ class PasswordListViewModel(
         if (ids.isEmpty()) return
         batchJob = viewModelScope.launch {
             _batchBusy.value = true
+            val generation = SessionManager.sessionGeneration
             try {
                 val count = mimaCangku.deleteMany(ids, vaultId)
-                xuanzhong.value = emptySet()
-                onResult(true, count)
+                SessionManager.withActiveSessionNow(generation) {
+                    xuanzhong.value = emptySet()
+                    onResult(true, count)
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    xuanzhong.value = emptySet()
+                    _cuowuXinxi.value = e.message
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 onResult(false, 0)
             } finally {
@@ -219,12 +240,26 @@ class PasswordListViewModel(
         if (ids.isEmpty()) return
         batchJob = viewModelScope.launch {
             _batchBusy.value = true
+            val generation = SessionManager.sessionGeneration
             try {
-                val count = mimaCangku.updateMany(vaultId, ids, favorite, tags?.let { TagCodec.normalize(it.lines()) })
-                xuanzhong.value = emptySet()
-                onResult(true, count)
+                SessionManager.requireActiveSession(generation)
+                val count = withContext(Dispatchers.Default) {
+                    SessionManager.requireActiveSession(generation)
+                    mimaCangku.updateMany(vaultId, ids, favorite, tags?.let { TagCodec.normalize(it.lines()) })
+                }
+                SessionManager.withActiveSessionNow(generation) {
+                    xuanzhong.value = emptySet()
+                    onResult(true, count)
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    xuanzhong.value = emptySet()
+                    _cuowuXinxi.value = e.message
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 onResult(false, 0)
             } finally { _batchBusy.value = false }
@@ -233,10 +268,17 @@ class PasswordListViewModel(
 
     fun toggleFavorite(id: String, favorite: Boolean) {
         viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 mimaCangku.setFavorite(id, favorite)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    _cuowuXinxi.value = e.message
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 _cuowuXinxi.value = "收藏操作失败，请重试"
             }
@@ -271,12 +313,18 @@ class PasswordListViewModel(
         // the vault the user already selected instead of silently jumping back to the first one.
         if (mimakuId.value.isNotBlank()) return
         viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 val mimaku = mimakuCangku.ensureDefault()
-                mimakuId.value = mimaku.id
-                _mimakuMingcheng.value = mimaku.name
+                SessionManager.withActiveSessionNow(generation) {
+                    mimakuId.value = mimaku.id
+                    _mimakuMingcheng.value = mimaku.name
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: VaultLockedException) {
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) { _cuowuXinxi.value = e.message }
             } catch (_: Exception) {
                 _cuowuXinxi.value = "无法打开密码库，请重新锁定后再试"
             }
@@ -286,17 +334,21 @@ class PasswordListViewModel(
     fun qiehuanMimaku(vaultId: String) {
         if (vaultId == mimakuId.value) return
         viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 val vault = mimakuCangku.getById(vaultId) ?: run {
                     _cuowuXinxi.value = "未找到密码库"
                     return@launch
                 }
-                mimakuId.value = vault.id
-                _mimakuMingcheng.value = vault.name
-                biaoqianGuolv.value = null
-                xuanzhong.value = emptySet()
+                SessionManager.withActiveSessionNow(generation) {
+                    mimakuId.value = vault.id
+                    _mimakuMingcheng.value = vault.name
+                    biaoqianGuolv.value = null
+                    xuanzhong.value = emptySet()
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: VaultLockedException) {
             } catch (_: Exception) {
                 _cuowuXinxi.value = "无法切换密码库"
             }
@@ -315,19 +367,28 @@ class PasswordListViewModel(
             return
         }
         vaultMutationJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 if (mimakuCangku.allOnce().any { it.name.equals(normalized, ignoreCase = true) }) {
                     onResult(false, "已存在同名密码库")
                     return@launch
                 }
                 val vault = mimakuCangku.create(normalized, "lock")
-                mimakuId.value = vault.id
-                _mimakuMingcheng.value = vault.name
-                biaoqianGuolv.value = null
-                xuanzhong.value = emptySet()
-                onResult(true, null)
+                SessionManager.withActiveSessionNow(generation) {
+                    mimakuId.value = vault.id
+                    _mimakuMingcheng.value = vault.name
+                    biaoqianGuolv.value = null
+                    xuanzhong.value = emptySet()
+                    onResult(true, null)
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    onResult(false, e.message)
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 onResult(false, "无法创建密码库")
             }
@@ -351,6 +412,7 @@ class PasswordListViewModel(
             return
         }
         vaultMutationJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 if (mimakuCangku.allOnce().any { it.id != vaultId && it.name.equals(normalized, ignoreCase = true) }) {
                     onResult(false, "已存在同名密码库")
@@ -360,11 +422,19 @@ class PasswordListViewModel(
                 if (vault == null) {
                     onResult(false, "未找到当前密码库")
                 } else {
-                    _mimakuMingcheng.value = vault.name
-                    onResult(true, null)
+                    SessionManager.withActiveSessionNow(generation) {
+                        _mimakuMingcheng.value = vault.name
+                        onResult(true, null)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    onResult(false, e.message)
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 onResult(false, "无法重命名密码库")
             }
@@ -379,20 +449,29 @@ class PasswordListViewModel(
             return
         }
         vaultMutationJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 when (val result = mimakuCangku.deleteKeepingOne(vaultId)) {
                     is VaultDeleteResult.Deleted -> {
-                        mimakuId.value = result.fallbackVault.id
-                        _mimakuMingcheng.value = result.fallbackVault.name
-                        biaoqianGuolv.value = null
-                        xuanzhong.value = emptySet()
-                        onResult(true, null)
+                        SessionManager.withActiveSessionNow(generation) {
+                            mimakuId.value = result.fallbackVault.id
+                            _mimakuMingcheng.value = result.fallbackVault.name
+                            biaoqianGuolv.value = null
+                            xuanzhong.value = emptySet()
+                            onResult(true, null)
+                        }
                     }
                     VaultDeleteResult.LastVault -> onResult(false, "至少保留一个密码库")
                     VaultDeleteResult.NotFound -> onResult(false, "未找到当前密码库")
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                publishForSession(generation) {
+                    onResult(false, e.message)
+                }
+            } catch (_: VaultLockedException) {
+                // A late write result must not change a subsequent session.
             } catch (_: Exception) {
                 onResult(false, "无法删除密码库")
             }
@@ -420,7 +499,7 @@ class PasswordListViewModel(
     fun yulanCsvDaoru(neirong: String, huidiao: (ImportPreviewPayload) -> Unit) {
         viewModelScope.launch {
             val jieguo = try {
-                val mubiao = mimakuId.value.ifEmpty { mimakuCangku.ensureDefault().id }
+                val mubiao = mimakuId.value
                 ImportPreviewPayload(
                     preview = withContext(Dispatchers.Default) { beifenGuanli.previewChromeCsv(neirong, mubiao) }
                 )
@@ -439,15 +518,29 @@ class PasswordListViewModel(
         celue: ImportConflictStrategy = ImportConflictStrategy.SKIP,
         huidiao: (ImportResult) -> Unit
     ) {
-        viewModelScope.launch {
+        if (importJob?.isActive == true) return
+        importJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
+            val completed = AtomicBoolean(false)
             val jieguo = try {
-                withContext(Dispatchers.Default) { beifenGuanli.importJsonBackup(neirong, mima, celue) }
+                withContext(Dispatchers.Default) { beifenGuanli.importJsonBackup(neirong, mima, celue).also { completed.set(true) } }
             } catch (e: CancellationException) {
+                // The acknowledgement can be lost at the dispatcher boundary; never replay.
+                beifenGuanli.requireImportResultReview(generation)
+                publishForSession(generation) {
+                    _cuowuXinxi.value = if (completed.get()) "导入已返回结果，请核对列表，不要重复导入" else "导入结果未确认，请核对列表，不要重复导入"
+                }
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                beifenGuanli.requireImportResultReview(generation)
+                ImportResult(0, 0, 0, listOf(requireNotNull(e.message)))
             } catch (_: Exception) {
                 ImportResult(0, 0, 0, listOf("导入失败，请检查文件后重试"))
             }
-            huidiao(jieguo)
+            publishForSession(generation) {
+                huidiao(jieguo)
+                beifenGuanli.acknowledgeImportResult(jieguo)
+            }
         }
     }
 
@@ -456,16 +549,30 @@ class PasswordListViewModel(
         celue: ImportConflictStrategy = ImportConflictStrategy.SKIP,
         huidiao: (ImportResult) -> Unit
     ) {
-        viewModelScope.launch {
+        if (importJob?.isActive == true) return
+        importJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
+            val completed = AtomicBoolean(false)
             val jieguo = try {
-                val mubiao = mimakuId.value.ifEmpty { mimakuCangku.ensureDefault().id }
-                withContext(Dispatchers.Default) { beifenGuanli.importChromeCsv(neirong, mubiao, celue) }
+                val mubiao = mimakuId.value
+                withContext(Dispatchers.Default) { beifenGuanli.importChromeCsv(neirong, mubiao, celue).also { completed.set(true) } }
             } catch (e: CancellationException) {
+                // The acknowledgement can be lost at the dispatcher boundary; never replay.
+                beifenGuanli.requireImportResultReview(generation)
+                publishForSession(generation) {
+                    _cuowuXinxi.value = if (completed.get()) "导入已返回结果，请核对列表，不要重复导入" else "导入结果未确认，请核对列表，不要重复导入"
+                }
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                beifenGuanli.requireImportResultReview(generation)
+                ImportResult(0, 0, 0, listOf(requireNotNull(e.message)))
             } catch (_: Exception) {
                 ImportResult(0, 0, 0, listOf("导入失败，请检查文件后重试"))
             }
-            huidiao(jieguo)
+            publishForSession(generation) {
+                huidiao(jieguo)
+                beifenGuanli.acknowledgeImportResult(jieguo)
+            }
         }
     }
 

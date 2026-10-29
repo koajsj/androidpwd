@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adapted from AndroidX material-icons-extended 1.7.8, filled/StarBorder.kt.
+     Copyright 2025 The Android Open Source Project. Apache-2.0; see LICENSES/AndroidX-icons.txt. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FF000000"
+        android:pathData="M22.0 9.24 l-7.19 -0.62 L12.0 2.0 L9.19 8.63 L2.0 9.24 l5.46 4.73 L5.82 21.0 L12.0 17.27 L18.18 21.0 l-1.63 -7.03 L22.0 9.24 Z M12.0 15.4 l-3.76 2.27 l1.0 -4.28 l-3.32 -2.88 l4.38 -0.38 L12.0 6.1 l1.71 4.04 l4.38 0.38 l-3.32 2.88 l1.0 4.28 L12.0 15.4 Z" />
+</vector>

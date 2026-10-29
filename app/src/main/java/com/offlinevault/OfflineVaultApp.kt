@@ -4,18 +4,24 @@ import android.app.Application
 import android.widget.Toast
 import com.offlinevault.autofill.PendingAutofillSave
 import com.offlinevault.security.SessionManager
+import com.offlinevault.data.repository.DatabaseWriteGate
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
+import androidx.room.withTransaction
 import com.offlinevault.utils.ClipboardHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class OfflineVaultApp : Application() {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val autofillSaveMutex = Mutex()
 
     lateinit var container: AppContainer
         private set
@@ -27,8 +33,8 @@ class OfflineVaultApp : Application() {
         // in-memory timer ran. Only a random marker and deadline are persisted, never the secret.
         ClipboardHelper.restorePendingSensitiveClear(this)
         applicationScope.launch {
-            SessionManager.unlocked.filter { it }.collect {
-                val generation = SessionManager.sessionGeneration
+            SessionManager.activeGeneration.collectLatest { generation ->
+                if (generation == null) return@collectLatest
                 var recoveryMaterialMigrationFailed = false
                 withContext(Dispatchers.IO) {
                     try {
@@ -58,7 +64,7 @@ class OfflineVaultApp : Application() {
                 }
                 // The activity may have been backgrounded while maintenance was running.
                 if (!SessionManager.isUnlocked || SessionManager.sessionGeneration != generation) {
-                    return@collect
+                    return@collectLatest
                 }
                 if (recoveryMaterialMigrationFailed) {
                     Toast.makeText(
@@ -79,7 +85,7 @@ class OfflineVaultApp : Application() {
                 // The activity may have been backgrounded (and the session locked) while the
                 // integrity check was running; nothing left to protect.
                 if (!SessionManager.isUnlocked || SessionManager.sessionGeneration != generation) {
-                    return@collect
+                    return@collectLatest
                 }
                 val report = integrity.getOrNull()
                 if (integrity.isFailure) {
@@ -91,7 +97,7 @@ class OfflineVaultApp : Application() {
                         "无法完成密码库结构校验，已锁定以保护数据。请重试解锁或使用加密备份恢复。",
                         Toast.LENGTH_LONG
                     ).show()
-                    return@collect
+                    return@collectLatest
                 }
                 if (report?.databaseHealthy == false) {
                     SessionManager.lock()
@@ -100,7 +106,7 @@ class OfflineVaultApp : Application() {
                         "密码库结构校验失败，已锁定以保护数据。请使用加密备份恢复。",
                         Toast.LENGTH_LONG
                     ).show()
-                    return@collect
+                    return@collectLatest
                 }
                 if (report?.hasEncryptedDataIssues == true) {
                     Toast.makeText(
@@ -109,33 +115,69 @@ class OfflineVaultApp : Application() {
                         Toast.LENGTH_LONG
                     ).show()
                 }
-                persistPendingAutofillSave()
+                savePendingAutofillCaptures(generation)
             }
         }
     }
 
-    /** Saves a credential captured by autofill while the vault was locked, once it unlocks. */
-    private suspend fun persistPendingAutofillSave() {
-        val capture = PendingAutofillSave.consume() ?: return
-        val saved = withContext(Dispatchers.IO) {
-            try {
+    /** Main-thread entry: live and post-unlock saves share a queue; database work switches to IO. */
+    suspend fun savePendingAutofillCaptures(generation: Long): Boolean =
+        autofillSaveMutex.withLock {
+            persistPendingAutofillSave(generation)
+        }
+
+    private suspend fun writeAutofillCapture(capture: PendingAutofillSave.Capture, generation: Long) {
+        withContext(Dispatchers.IO) {
+            DatabaseWriteGate.withTransaction(transaction = { action -> container.database.withTransaction { action() } }) {
+                SessionManager.requireActiveSession(generation)
                 val vaultId = container.vaultRepository.ensureDefault().id
                 container.passwordRepository.upsertFromAutofill(
                     vaultId, capture.identifier, capture.username, capture.password
                 )
+            }
+            // Set before returning across a cancellable dispatcher boundary.
+            capture.receipt.saved = true
+        }
+    }
+
+    /** Caller owns autofillSaveMutex. A failed deferred save blocks newer direct writes. */
+    private suspend fun persistPendingAutofillSave(generation: Long): Boolean {
+        while (SessionManager.isUnlocked && SessionManager.sessionGeneration == generation) {
+            val capture = PendingAutofillSave.consume() ?: return true
+            val saved = try {
+                writeAutofillCapture(capture, generation)
+                capture.receipt.saved = true
                 true
             } catch (e: CancellationException) {
+                if (!capture.receipt.saved) retainPendingAutofillSave(capture)
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                if (e.committed) {
+                    capture.receipt.saved = true
+                } else {
+                    capture.receipt.outcomeUnknown = true
+                    Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+                    // Drop only this consumed in-memory capture; never replay an unknown commit.
+                    return false
+                }
+                true
             } catch (_: Exception) {
                 false
             }
+            if (saved) {
+                Toast.makeText(this@OfflineVaultApp, "已将账号保存到密码库", Toast.LENGTH_SHORT).show()
+            } else {
+                // Requeue once, then stop so a persistent failure cannot spin or block the UI.
+                retainPendingAutofillSave(capture)
+                return false
+            }
         }
-        if (saved) {
-            Toast.makeText(this@OfflineVaultApp, "已将账号保存到密码库", Toast.LENGTH_SHORT).show()
-        } else {
-            // Keep the encrypted in-memory capture for one later unlock. If it cannot be retained
-            // (for example, the Keystore is unavailable), it has already been safely dropped.
-            PendingAutofillSave.set(capture)
+        return false
+    }
+
+    private fun retainPendingAutofillSave(capture: PendingAutofillSave.Capture) {
+        if (!PendingAutofillSave.retry(capture)) {
+            Toast.makeText(this, "账号暂存失败，请重新触发自动填充保存", Toast.LENGTH_LONG).show()
         }
     }
 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.PasswordHistoryItem
 import com.offlinevault.data.repository.PasswordRepository
+import com.offlinevault.data.repository.DatabaseWriteOutcomeException
 import com.offlinevault.security.SessionManager
 import com.offlinevault.security.VaultLockedException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -15,11 +16,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PasswordDetailViewModel(
@@ -35,30 +40,52 @@ class PasswordDetailViewModel(
      * Observes the underlying row so the screen always reflects the latest edit, and collapses to
      * null if the item is deleted. Decryption happens on each emission using the active session key.
      */
-    val item: StateFlow<DecryptedPassword?> =
-        id.flatMapLatest { pid ->
-            if (pid == null) flowOf(null)
-            else passwordRepository.observe(pid).map { entity ->
-                entity?.let {
+    private val _item = MutableStateFlow<DecryptedPassword?>(null)
+    val item: StateFlow<DecryptedPassword?> = _item.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            // Observe only while the detail UI is collecting; do not decrypt off-screen updates.
+            combine(id, _item.subscriptionCount) { pid, subscribers ->
+                pid.takeIf { subscribers > 0 }
+            }.distinctUntilChanged().flatMapLatest { pid ->
+                if (pid == null) flowOf(null)
+                else passwordRepository.observe(pid).catch { error ->
+                    if (error is CancellationException) throw error
+                    if (error !is VaultLockedException) {
+                        _error.value = "无法读取这条凭据。"
+                    }
+                    emit(null)
+                }
+            }.collectLatest { entity ->
+                if (entity == null) {
+                    _item.value = null
+                } else {
                     try {
-                        passwordRepository.decryptForActiveSession(it)
+                        val generation = SessionManager.requireActiveSession()
+                        val decrypted = withContext(Dispatchers.Default) {
+                            SessionManager.withActiveSession {
+                                SessionManager.requireActiveSession(generation)
+                                passwordRepository.decryptForActiveSession(entity)
+                            }
+                        }
+                        SessionManager.withActiveSessionNow(generation) {
+                            if (id.value == entity.id && _item.subscriptionCount.value > 0) {
+                                _item.value = decrypted
+                            }
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: VaultLockedException) {
-                        null
+                        _item.value = null
                     } catch (e: Exception) {
                         _error.value = "这条凭据已损坏，无法解密。"
-                        null
+                        _item.value = null
                     }
                 }
-            }.catch { error ->
-                if (error is CancellationException) throw error
-                if (error !is VaultLockedException) {
-                    _error.value = "这条凭据已损坏，无法解密。"
-                }
-                emit(null)
             }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        }
+    }
 
     /** Live count of previous passwords, for the "历史密码 (N)" entry. */
     val historyCount: StateFlow<Int> =
@@ -81,6 +108,7 @@ class PasswordDetailViewModel(
                 if (!unlocked) {
                     historyJob?.cancel()
                     _history.value = emptyList()
+                    _item.value = null
                     id.value = null
                     _error.value = null
                 }
@@ -92,6 +120,7 @@ class PasswordDetailViewModel(
         if (id.value != passwordId) {
             historyJob?.cancel()
             _history.value = emptyList()
+            _item.value = null
         }
         _error.value = null
         id.value = passwordId
@@ -103,7 +132,12 @@ class PasswordDetailViewModel(
         historyJob = viewModelScope.launch {
             try {
                 val generation = SessionManager.requireActiveSession()
-                val result = passwordRepository.history(pid)
+                val result = withContext(Dispatchers.Default) {
+                    SessionManager.withActiveSession {
+                        SessionManager.requireActiveSession(generation)
+                        passwordRepository.history(pid)
+                    }
+                }
                 SessionManager.withActiveSessionNow(generation) {
                     if (id.value == pid) _history.value = result
                 }
@@ -126,11 +160,15 @@ class PasswordDetailViewModel(
         if (deleteJob?.isActive == true) return
         val pid = id.value ?: return onResult(true, null)
         deleteJob = viewModelScope.launch {
+            val generation = SessionManager.sessionGeneration
             try {
                 passwordRepository.deleteById(pid)
-                onResult(true, null)
+                SessionManager.withActiveSessionNow(generation) { onResult(true, null) }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: DatabaseWriteOutcomeException) {
+                if (SessionManager.isUnlocked && SessionManager.sessionGeneration == generation) onResult(false, e.message)
+            } catch (_: com.offlinevault.security.VaultLockedException) {
             } catch (_: Exception) {
                 onResult(false, "删除失败，请重新解锁后重试")
             }

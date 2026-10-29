@@ -77,12 +77,15 @@ class MnemonicManager {
         kdf: KdfSpec = KdfVersions.current()
     ): Boolean {
         val actual = CryptoManager.decode(verifierHash(normalizedPhrase, salt, kdf))
-        val expected = CryptoManager.decode(expectedHash)
         return try {
-            MessageDigest.isEqual(actual, expected)
+            val expected = CryptoManager.decode(expectedHash)
+            try {
+                MessageDigest.isEqual(actual, expected)
+            } finally {
+                expected.fill(0)
+            }
         } finally {
             actual.fill(0)
-            expected.fill(0)
         }
     }
 

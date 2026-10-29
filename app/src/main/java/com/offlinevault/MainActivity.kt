@@ -3,7 +3,6 @@ package com.offlinevault
 import android.os.Bundle
 import android.content.res.Configuration
 import android.view.View
-import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -36,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.offlinevault.security.LockGuard
 import com.offlinevault.security.SessionManager
+import com.offlinevault.ui.components.setScreenshotProtection
 import com.offlinevault.ui.screens.PasswordDetailScreen
 import com.offlinevault.ui.screens.PasswordEditScreen
 import com.offlinevault.ui.screens.PasswordHealthScreen
@@ -121,18 +121,17 @@ class MainActivity : FragmentActivity() {
         // Apply / clear FLAG_SECURE reactively from the screenshot-block setting.
         // Start fail-closed: DataStore is asynchronous, so a recreated unlocked activity must not
         // draw sensitive content before the persisted preference is available.
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        setScreenshotProtection(window, blocked = true)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 try {
                     prefs.screenshotBlockedFlow.collect { blocked ->
-                        if (blocked) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        setScreenshotProtection(window, blocked)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
-                    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    setScreenshotProtection(window, blocked = true)
                 }
             }
         }
@@ -239,7 +238,7 @@ private fun AppRoot() {
     val unlockState by authVm.unlockState.collectAsStateWithLifecycle()
     val biometricEnabled by authVm.biometricEnabled.collectAsStateWithLifecycle()
     val riskScore by authVm.riskScore.collectAsStateWithLifecycle()
-    val recoveryQuestion by authVm.recoveryQuestion.collectAsStateWithLifecycle()
+    val legacyAnswerPending by authVm.legacyAnswerPending.collectAsStateWithLifecycle()
     val mnemonicEnabled by authVm.mnemonicEnabled.collectAsStateWithLifecycle()
     val credentialType by authVm.credentialType.collectAsStateWithLifecycle()
     val setupInProgress by authVm.setupInProgress.collectAsStateWithLifecycle()
@@ -328,23 +327,18 @@ private fun AppRoot() {
                 setupError = authVm.setupError.collectAsStateWithLifecycle().value,
                 setupInProgress = setupInProgress,
                 biometricAvailable = biometricAvailable,
-                onCreate = { master, question, answer, mnemonicPhrase, enableBio, credType ->
+                onCreate = { master, mnemonicPhrase, enableBio, credType ->
                     pendingEnableBiometric = enableBio
-                    authVm.setup(master, question, answer, credType, mnemonicPhrase)
+                    authVm.setup(master, credType, mnemonicPhrase)
                 }
             )
 
             AppLockState.LOCKED -> {
                 if (showRecover) {
                     RecoverScreen(
-                        question = recoveryQuestion,
                         credentialType = credentialType,
                         mnemonicEnabled = mnemonicEnabled,
-                        onRecoverByAnswer = { answer, newPassword, onResult ->
-                            authVm.recover(answer, newPassword) { ok, msg ->
-                                onResult(ok, msg)
-                            }
-                        },
+                        legacyAnswerPending = legacyAnswerPending,
                         onRecoverByMnemonic = { mnemonic, newPassword, onResult ->
                             authVm.recoverWithMnemonic(mnemonic, newPassword) { ok, msg ->
                                 onResult(ok, msg)

@@ -29,10 +29,10 @@ class PasswordHealthViewModel(
     private val passwordRepository: PasswordRepository,
     prefs: SecurityPreferences
 ) : ViewModel() {
-    data class RecoveryStatus(val mnemonic: Boolean, val question: Boolean, val lastBackupAt: Long?, val credentialType: CredentialType)
-    val recoveryStatus = combine(prefs.mnemonicEnabledFlow, prefs.recoveryQuestionFlow, prefs.lastBackupWrittenAtFlow, prefs.credentialTypeFlow) { words, question, backup, type ->
-        RecoveryStatus(words, question.isNotBlank(), backup, CredentialType.fromKey(type))
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), RecoveryStatus(false, false, null, CredentialType.PASSWORD))
+    data class RecoveryStatus(val mnemonic: Boolean, val legacyAnswerPending: Boolean?, val lastBackupAt: Long?, val credentialType: CredentialType)
+    val recoveryStatus = combine(prefs.mnemonicEnabledFlow, prefs.legacyAnswerPendingFlow, prefs.lastBackupWrittenAtFlow, prefs.credentialTypeFlow) { words, legacy, backup, type ->
+        RecoveryStatus(words, legacy, backup, CredentialType.fromKey(type))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), RecoveryStatus(false, null, null, CredentialType.PASSWORD))
 
     data class HealthEntry(val id: String, val title: String, val username: String)
 
@@ -94,9 +94,9 @@ class PasswordHealthViewModel(
         val report = PasswordSecurityAnalyzer.analyze(all.map { it.toSecurityCandidate() })
         return HealthReport(
             security = report,
-            weak = all.filter { it.id in report.weakCredentialIds }.map { it.toEntry() },
-            reused = all.filter { it.id in report.reusedCredentialIds }.map { it.toEntry() },
-            stale = all.filter { it.id in report.staleCredentialIds }.map { it.toEntry() }
+            weak = all.mapNotNull { if (it.id in report.weakCredentialIds) it.toEntry() else null },
+            reused = all.mapNotNull { if (it.id in report.reusedCredentialIds) it.toEntry() else null },
+            stale = all.mapNotNull { if (it.id in report.staleCredentialIds) it.toEntry() else null }
         )
     }
 

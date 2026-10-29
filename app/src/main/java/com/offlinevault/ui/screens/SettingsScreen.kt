@@ -50,6 +50,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -97,7 +99,7 @@ fun SettingsScreen(
     val lockOnScreenOff by viewModel.lockOnScreenOff.collectAsStateWithLifecycle()
     val healthCheckEnabled by viewModel.healthCheckEnabled.collectAsStateWithLifecycle()
     val clipboardSeconds by viewModel.clipboardClearSeconds.collectAsStateWithLifecycle()
-    val recoveryQuestion by viewModel.recoveryQuestion.collectAsStateWithLifecycle()
+    val legacyAnswerPending by viewModel.legacyAnswerPending.collectAsStateWithLifecycle()
     val mnemonicEnabled by viewModel.mnemonicEnabled.collectAsStateWithLifecycle()
     val credentialType by viewModel.credentialType.collectAsStateWithLifecycle()
     val vaults by viewModel.vaults.collectAsStateWithLifecycle()
@@ -110,7 +112,6 @@ fun SettingsScreen(
     var showAutoLock by remember { mutableStateOf(false) }
     var showClipboard by remember { mutableStateOf(false) }
     var showChangeMaster by remember { mutableStateOf(false) }
-    var showChangeRecovery by remember { mutableStateOf(false) }
     var showMnemonicPasswordPrompt by remember { mutableStateOf(false) }
     var showDisableMnemonicPrompt by remember { mutableStateOf(false) }
     var showCsvWarning by remember { mutableStateOf(false) }
@@ -152,8 +153,8 @@ fun SettingsScreen(
                 if (ok) viewModel.recordBackupWritten()
                 toast(if (ok) "加密备份已保存" else "无法写入文件")
             }
-        } else if (uri != null && json != null) {
-            toast("密码库已锁定，请解锁后重新导出")
+        } else if (uri != null) {
+            toast(if (json == null) "导出状态已失效，请重新导出；所选文件可能为空" else "密码库已锁定，请解锁后重新导出")
         }
         pendingJsonBackup = null
     }
@@ -175,8 +176,8 @@ fun SettingsScreen(
                     toast(if (ok) "CSV 已导出（包含明文密码）" else "无法写入文件")
                 }
             }
-        } else if (uri != null && vaultId != null) {
-            toast("密码库已锁定，请解锁后重新导出")
+        } else if (uri != null) {
+            toast(if (vaultId == null) "导出状态已失效，请重新导出；所选文件可能为空" else "密码库已锁定，请解锁后重新导出")
         }
         pendingCsvVaultId = null
     }
@@ -439,10 +440,17 @@ fun SettingsScreen(
                     SettingDivider()
                     ClickSetting("修改${credentialType.noun}", credentialType.displayName) { showChangeMaster = true }
                     SettingDivider()
-                    ClickSetting("安全问题", recoveryQuestion.ifBlank { "未设置" }) { showChangeRecovery = true }
-                    SettingDivider()
                     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                         Text("助记词与恢复", style = MaterialTheme.typography.bodyLarge)
+                        if (legacyAnswerPending != false) {
+                            Text(
+                                if (legacyAnswerPending == true)
+                                    "旧密保包装尚未移除，仍有离线猜测风险。请重新生成、离线备份并确认助记词；成功后将原子移除旧密保包装。仅修改主密码不会撤销它。"
+                                else "旧恢复材料状态暂不可读取，不能确认是否已移除。",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
                         Text(
                             if (mnemonicEnabled) "已启用 12 个助记词恢复，仅用于最终恢复"
                             else "未启用 12 个助记词恢复",
@@ -602,31 +610,13 @@ fun SettingsScreen(
         )
     }
 
-    // ---- Change recovery ----
-    if (showChangeRecovery) {
-        ChangeRecoveryDialog(
-            currentQuestion = recoveryQuestion,
-            onDismiss = { showChangeRecovery = false },
-            onConfirm = { q, a ->
-                viewModel.changeRecovery(q, a) { ok, msg ->
-                    if (ok) {
-                        showChangeRecovery = false
-                        toast("安全问题已更新")
-                    } else {
-                        toast(msg ?: "操作失败")
-                    }
-                }
-            }
-        )
-    }
-
     if (showMnemonicPasswordPrompt) {
         MasterPasswordDialog(
             title = if (mnemonicEnabled) "重新生成助记词" else "启用助记词恢复",
             message = if (mnemonicEnabled)
-                "请输入当前主密码。新助记词生效后，旧助记词将立即失效。"
+                "请输入当前主密码。确认并保存新助记词后，将替换旧助记词并移除旧密保包装。历史备份或已复制的旧包装不会随之撤销。"
             else
-                "请输入当前主密码后生成新的 12 个助记词。助记词不会明文保存，只展示一次。",
+                "请输入当前主密码后生成新的 12 个助记词。确认保存后同时移除旧密保包装；助记词不会明文保存，只展示一次。",
             confirmLabel = "继续",
             credentialType = credentialType,
             onDismiss = { if (!verifyingMnemonicMaster) showMnemonicPasswordPrompt = false },
@@ -651,6 +641,7 @@ fun SettingsScreen(
 
     if (pendingMnemonicWords != null) {
         AlertDialog(
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             onDismissRequest = {
                 if (!pendingMnemonicSaving) {
                     pendingMnemonicWords = null
@@ -704,7 +695,7 @@ fun SettingsScreen(
     if (showDisableMnemonicPrompt) {
         MasterPasswordDialog(
             title = "关闭助记词恢复",
-            message = "请输入当前主密码。关闭后将删除助记词恢复材料，仅保留主密码 / 指纹 / 密保问题恢复。",
+            message = "请输入当前主密码。关闭后将删除助记词恢复材料；忘记解锁凭据且无法使用指纹时将无法恢复。请先确认已有可用的加密备份及其密码。",
             confirmLabel = "关闭",
             credentialType = credentialType,
             onDismiss = { showDisableMnemonicPrompt = false },
@@ -1047,54 +1038,6 @@ private fun ChangeMasterDialog(
                 }
                 if (error == null) onConfirm(old, new)
             }) { Text("修改") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
-}
-
-@Composable
-private fun ChangeRecoveryDialog(
-    currentQuestion: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit
-) {
-    var question by remember { mutableStateOf(currentQuestion) }
-    var answer by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("安全问题") },
-        text = {
-            Column {
-                VaultTextField(value = question, onValueChange = { question = it }, label = "安全问题")
-                Spacer(Modifier.height(10.dp))
-                PasswordVisualField(
-                    value = answer,
-                    onValueChange = { answer = it },
-                    label = "新答案",
-                    revealed = false,
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "答案至少 ${com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH} 个字符。" +
-                        "避免使用姓名、生日或容易猜到的公开信息。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (question.isNotBlank() &&
-                        answer.trim().length >= com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
-                    ) {
-                        onConfirm(question, answer)
-                    }
-                },
-                enabled = question.isNotBlank() &&
-                    answer.trim().length >= com.offlinevault.security.KeyManager.MIN_NEW_RECOVERY_ANSWER_LENGTH
-            ) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

@@ -3,6 +3,7 @@ package com.offlinevault.data.preferences
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -10,6 +11,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.offlinevault.security.CryptoManager
+import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
@@ -22,6 +24,15 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 /** App level (non-secret-bearing key material + user settings) persistence backed by DataStore. */
 class SecurityPreferences(private val context: Context) {
+
+    /** Ciphertext and public derivation parameters only; never a phrase or plaintext key. */
+    data class MnemonicMaterial(
+        val salt: String,
+        val wrappedDek: String,
+        val verifierHash: String,
+        val iterations: Int,
+        val kdfVersion: String
+    )
 
     companion object {
         private const val DEFAULT_AUTO_LOCK_SECONDS = 60
@@ -91,35 +102,22 @@ class SecurityPreferences(private val context: Context) {
 
     suspend fun saveVaultMaterial(
         masterSalt: String,
-        recoverySalt: String,
         masterWrappedDek: String,
-        recoveryWrappedDek: String,
-        recoveryQuestion: String,
         masterIterations: Int,
-        recoveryIterations: Int,
         masterKdfVersion: String,
-        recoveryKdfVersion: String,
-        mnemonicSalt: String,
-        mnemonicWrappedDek: String,
-        mnemonicVerifierHash: String,
-        mnemonicIterations: Int,
-        mnemonicKdfVersion: String
+        mnemonic: MnemonicMaterial,
+        credentialType: String
     ) {
         context.dataStore.edit {
+            check(it[Keys.MASTER_WRAPPED_DEK] == null) { "Vault is already initialized" }
             it[Keys.MASTER_SALT] = masterSalt
-            it[Keys.RECOVERY_SALT] = recoverySalt
             it[Keys.MASTER_WRAPPED_DEK] = masterWrappedDek
-            it[Keys.RECOVERY_WRAPPED_DEK] = recoveryWrappedDek
-            it[Keys.RECOVERY_QUESTION] = recoveryQuestion
             it[Keys.MASTER_ITERATIONS] = masterIterations
-            it[Keys.RECOVERY_ITERATIONS] = recoveryIterations
             it[Keys.MASTER_KDF_VERSION] = masterKdfVersion
-            it[Keys.RECOVERY_KDF_VERSION] = recoveryKdfVersion
-            it[Keys.MNEMONIC_SALT] = mnemonicSalt
-            it[Keys.MNEMONIC_WRAPPED_DEK] = mnemonicWrappedDek
-            it[Keys.MNEMONIC_VERIFIER_HASH] = mnemonicVerifierHash
-            it[Keys.MNEMONIC_ITERATIONS] = mnemonicIterations
-            it[Keys.MNEMONIC_KDF_VERSION] = mnemonicKdfVersion
+            it.setMnemonic(mnemonic)
+            it[Keys.CREDENTIAL_TYPE] = credentialType
+            it[Keys.FAILED_ATTEMPTS] = 0
+            it[Keys.LAST_FAILED_AT] = 0L
         }
     }
 
@@ -162,34 +160,47 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun updateRecoveryMaterial(
-        recoverySalt: String,
-        recoveryWrappedDek: String,
-        recoveryQuestion: String,
-        recoveryIterations: Int,
-        recoveryKdfVersion: String
+    /** Recovery replaces all required envelopes, retires the answer and resets failures atomically. */
+    suspend fun completeRecovery(
+        masterSalt: String,
+        masterWrappedDek: String,
+        masterIterations: Int,
+        masterKdfVersion: String,
+        expectedGeneration: Long,
+        mnemonic: MnemonicMaterial
     ) {
         context.dataStore.edit {
-            it[Keys.RECOVERY_SALT] = recoverySalt
-            it[Keys.RECOVERY_WRAPPED_DEK] = recoveryWrappedDek
-            it[Keys.RECOVERY_QUESTION] = recoveryQuestion
-            it[Keys.RECOVERY_ITERATIONS] = recoveryIterations
-            it[Keys.RECOVERY_KDF_VERSION] = recoveryKdfVersion
-        }
-    }
-
-    suspend fun updateRecoveryWrappedDekIfUnchanged(expected: String, replacement: String) {
-        context.dataStore.edit {
-            if (it[Keys.RECOVERY_WRAPPED_DEK] == expected) {
-                it[Keys.RECOVERY_WRAPPED_DEK] = replacement
+            SessionManager.withRecoveryCommit(expectedGeneration) {
+                it[Keys.MASTER_SALT] = masterSalt
+                it[Keys.MASTER_WRAPPED_DEK] = masterWrappedDek
+                it[Keys.MASTER_ITERATIONS] = masterIterations
+                it[Keys.MASTER_KDF_VERSION] = masterKdfVersion
+                it.setMnemonic(mnemonic)
+                it.retireLegacyAnswer()
+                it[Keys.FAILED_ATTEMPTS] = 0
+                it[Keys.LAST_FAILED_AT] = 0L
             }
         }
     }
 
+    private fun MutablePreferences.setMnemonic(material: MnemonicMaterial) {
+        this[Keys.MNEMONIC_SALT] = material.salt
+        this[Keys.MNEMONIC_WRAPPED_DEK] = material.wrappedDek
+        this[Keys.MNEMONIC_VERIFIER_HASH] = material.verifierHash
+        this[Keys.MNEMONIC_ITERATIONS] = material.iterations
+        this[Keys.MNEMONIC_KDF_VERSION] = material.kdfVersion
+    }
+
+    private fun MutablePreferences.retireLegacyAnswer() {
+        remove(Keys.RECOVERY_SALT)
+        remove(Keys.RECOVERY_WRAPPED_DEK)
+        remove(Keys.RECOVERY_QUESTION)
+        remove(Keys.RECOVERY_ITERATIONS)
+        remove(Keys.RECOVERY_KDF_VERSION)
+    }
+
     suspend fun masterSalt(): String? = context.dataStore.data.first()[Keys.MASTER_SALT]
-    suspend fun recoverySalt(): String? = context.dataStore.data.first()[Keys.RECOVERY_SALT]
     suspend fun masterWrappedDek(): String? = context.dataStore.data.first()[Keys.MASTER_WRAPPED_DEK]
-    suspend fun recoveryWrappedDek(): String? = context.dataStore.data.first()[Keys.RECOVERY_WRAPPED_DEK]
     suspend fun mnemonicSalt(): String? = context.dataStore.data.first()[Keys.MNEMONIC_SALT]
     suspend fun mnemonicWrappedDek(): String? = context.dataStore.data.first()[Keys.MNEMONIC_WRAPPED_DEK]
     suspend fun mnemonicVerifierHash(): String? = context.dataStore.data.first()[Keys.MNEMONIC_VERIFIER_HASH]
@@ -197,11 +208,8 @@ class SecurityPreferences(private val context: Context) {
     /** Iteration counts; absent material predates persistence and uses the legacy count. */
     suspend fun masterIterations(): Int =
         context.dataStore.data.first()[Keys.MASTER_ITERATIONS] ?: CryptoManager.LEGACY_PBKDF2_ITERATIONS
-    suspend fun recoveryIterations(): Int =
-        context.dataStore.data.first()[Keys.RECOVERY_ITERATIONS] ?: CryptoManager.LEGACY_PBKDF2_ITERATIONS
 
     suspend fun masterKdfVersion(): String? = context.dataStore.data.first()[Keys.MASTER_KDF_VERSION]
-    suspend fun recoveryKdfVersion(): String? = context.dataStore.data.first()[Keys.RECOVERY_KDF_VERSION]
     // Existing mnemonic material was created with the then-current PBKDF2 default (300k).
     suspend fun mnemonicIterations(): Int =
         context.dataStore.data.first()[Keys.MNEMONIC_ITERATIONS] ?: CryptoManager.DEFAULT_PBKDF2_ITERATIONS
@@ -218,12 +226,10 @@ class SecurityPreferences(private val context: Context) {
                 ?: if (prefs[Keys.MASTER_WRAPPED_DEK] != null) "password" else "pin6"
         }.catch { emit("password") }
 
-    suspend fun setCredentialType(value: String) {
-        context.dataStore.edit { it[Keys.CREDENTIAL_TYPE] = value }
-    }
-
-    val recoveryQuestionFlow: Flow<String> =
-        context.dataStore.data.map { it[Keys.RECOVERY_QUESTION] ?: "" }.catch { emit("") }
+    /** null means unreadable, not proof that weak legacy material is absent. */
+    val legacyAnswerPendingFlow: Flow<Boolean?> = context.dataStore.data
+        .map<Preferences, Boolean?> { it[Keys.RECOVERY_WRAPPED_DEK] != null }
+        .catch { emit(null) }
 
     val mnemonicEnabledFlow: Flow<Boolean> =
         context.dataStore.data
@@ -235,18 +241,16 @@ class SecurityPreferences(private val context: Context) {
             .catch { emit(false) }
 
     suspend fun updateMnemonicMaterial(
-        mnemonicSalt: String,
-        mnemonicWrappedDek: String,
-        mnemonicVerifierHash: String,
-        mnemonicIterations: Int,
-        mnemonicKdfVersion: String
+        material: MnemonicMaterial,
+        expectedGeneration: Long
     ) {
         context.dataStore.edit {
-            it[Keys.MNEMONIC_SALT] = mnemonicSalt
-            it[Keys.MNEMONIC_WRAPPED_DEK] = mnemonicWrappedDek
-            it[Keys.MNEMONIC_VERIFIER_HASH] = mnemonicVerifierHash
-            it[Keys.MNEMONIC_ITERATIONS] = mnemonicIterations
-            it[Keys.MNEMONIC_KDF_VERSION] = mnemonicKdfVersion
+            SessionManager.withActiveSessionNow(expectedGeneration) {
+                it.setMnemonic(material)
+                it.retireLegacyAnswer()
+                it[Keys.FAILED_ATTEMPTS] = 0
+                it[Keys.LAST_FAILED_AT] = 0L
+            }
         }
     }
 
@@ -266,13 +270,15 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun clearMnemonicMaterial() {
+    suspend fun clearMnemonicMaterial(expectedGeneration: Long) {
         context.dataStore.edit {
-            it.remove(Keys.MNEMONIC_SALT)
-            it.remove(Keys.MNEMONIC_WRAPPED_DEK)
-            it.remove(Keys.MNEMONIC_VERIFIER_HASH)
-            it.remove(Keys.MNEMONIC_ITERATIONS)
-            it.remove(Keys.MNEMONIC_KDF_VERSION)
+            SessionManager.withActiveSessionNow(expectedGeneration) {
+                it.remove(Keys.MNEMONIC_SALT)
+                it.remove(Keys.MNEMONIC_WRAPPED_DEK)
+                it.remove(Keys.MNEMONIC_VERIFIER_HASH)
+                it.remove(Keys.MNEMONIC_ITERATIONS)
+                it.remove(Keys.MNEMONIC_KDF_VERSION)
+            }
         }
     }
 
@@ -281,11 +287,17 @@ class SecurityPreferences(private val context: Context) {
     val biometricEnabledFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.BIOMETRIC_ENABLED] ?: false }.catch { emit(false) }
 
-    suspend fun setBiometric(enabled: Boolean, wrappedDek: String?) {
+    suspend fun setBiometric(enabled: Boolean, wrappedDek: String?, expectedGeneration: Long? = null) {
         context.dataStore.edit {
-            it[Keys.BIOMETRIC_ENABLED] = enabled
-            if (wrappedDek != null) it[Keys.BIOMETRIC_WRAPPED_DEK] = wrappedDek
-            else it.remove(Keys.BIOMETRIC_WRAPPED_DEK)
+            if (enabled) {
+                SessionManager.withActiveSessionNow(requireNotNull(expectedGeneration)) {
+                    it[Keys.BIOMETRIC_ENABLED] = true
+                    it[Keys.BIOMETRIC_WRAPPED_DEK] = requireNotNull(wrappedDek)
+                }
+            } else {
+                it[Keys.BIOMETRIC_ENABLED] = false
+                it.remove(Keys.BIOMETRIC_WRAPPED_DEK)
+            }
         }
     }
 
@@ -309,18 +321,12 @@ class SecurityPreferences(private val context: Context) {
         }
     }
 
-    suspend fun autoLockSecondsValue(): Int =
-        context.dataStore.data.first().autoLockSeconds()
-
     val lockOnScreenOffFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.LOCK_ON_SCREEN_OFF] ?: false }.catch { emit(false) }
 
     suspend fun setLockOnScreenOff(value: Boolean) {
         context.dataStore.edit { it[Keys.LOCK_ON_SCREEN_OFF] = value }
     }
-
-    suspend fun screenshotBlockedValue(): Boolean =
-        context.dataStore.data.first()[Keys.SCREENSHOT_BLOCKED] ?: true
 
     val screenshotBlockedFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.SCREENSHOT_BLOCKED] ?: true }.catch { emit(true) }

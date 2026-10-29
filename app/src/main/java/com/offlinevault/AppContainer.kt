@@ -14,7 +14,7 @@ import com.offlinevault.security.RiskEngine
 /** Tiny manual dependency container. Keeps the app free of any DI framework. */
 class AppContainer(context: Context) {
 
-    private val database = AppDatabase.get(context)
+    internal val database = AppDatabase.get(context)
     private val mnemonicManager = MnemonicManager()
 
     val securityPreferences = SecurityPreferences(context.applicationContext)
@@ -22,7 +22,7 @@ class AppContainer(context: Context) {
     val riskEngine = RiskEngine(securityPreferences)
     val integrityChecker = VaultIntegrityChecker(database)
 
-    val vaultRepository = VaultRepository(database.vaultDao())
+    val vaultRepository = VaultRepository(database.vaultDao(), database)
     val passwordRepository = PasswordRepository(database.passwordDao(), database)
     val backupManager = BackupManager(vaultRepository, passwordRepository, database)
 }

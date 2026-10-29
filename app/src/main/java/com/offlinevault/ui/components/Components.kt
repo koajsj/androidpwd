@@ -29,7 +29,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -262,12 +261,5 @@ fun SectionHeading(title: String, description: String? = null) {
             Text(description, style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-    }
-}
-
-@Composable
-fun TextActionButton(text: String, onClick: () -> Unit, color: Color = LocalContentColor.current) {
-    TextButton(onClick = onClick) {
-        Text(text, color = color, fontWeight = FontWeight.Medium)
     }
 }

@@ -173,8 +173,6 @@ class VaultAutofillService : AutofillService() {
                 val isPassword = hints.any { it.contains("password") } ||
                     isPasswordInput(inputType) ||
                     looksLikePassword(node)
-                val usernameScore = usernameScore(node, hints, inputType)
-
                 if (isPassword) {
                     passwordCandidates += FieldCandidate(
                         id = autofillId,
@@ -182,8 +180,11 @@ class VaultAutofillService : AutofillService() {
                         order = fieldOrder,
                         score = passwordScore(node, hints)
                     )
-                } else if (usernameScore > 0) {
-                    usernameCandidates += FieldCandidate(autofillId, value, fieldOrder, usernameScore)
+                } else {
+                    val usernameScore = usernameScore(node, hints, inputType)
+                    if (usernameScore > 0) {
+                        usernameCandidates += FieldCandidate(autofillId, value, fieldOrder, usernameScore)
+                    }
                 }
             }
             for (i in 0 until node.childCount) {
@@ -230,6 +231,7 @@ class VaultAutofillService : AutofillService() {
         )
     }
 
+    @Synchronized
     override fun onSaveRequest(request: SaveRequest, callback: SaveCallback) {
         val structure = request.fillContexts.lastOrNull()?.structure
         if (structure == null) {
@@ -256,6 +258,12 @@ class VaultAutofillService : AutofillService() {
             username = parsed.usernameValue.orEmpty(),
             password = password
         )
+        // Queue synchronously before checking the session or launching IO. Both locked and live
+        // captures share this order, so a delayed worker can never replay an older password last.
+        if (!PendingAutofillSave.set(capture)) {
+            callback.safeFailure("无法安全暂存账号，请解锁应用后重试")
+            return
+        }
 
         val expectedGeneration = try {
             SessionManager.requireActiveSession()
@@ -264,21 +272,20 @@ class VaultAutofillService : AutofillService() {
         }
         if (expectedGeneration != null) {
             val app = application as OfflineVaultApp
-            serviceScope.launch {
+            // The application consumer reports Android Toasts; database work switches to IO there.
+            serviceScope.launch(Dispatchers.Main.immediate) {
                 try {
-                    SessionManager.withActiveSession {
-                        // The framework may deliver a save callback after a lifecycle change.
-                        // Never persist a capture from an older unlocked session.
-                        SessionManager.requireActiveSession(expectedGeneration)
-                        val vaultId = app.container.vaultRepository.ensureDefault().id
-                        app.container.passwordRepository.upsertFromAutofill(
-                            vaultId, capture.identifier, capture.username, capture.password
-                        )
-                        SessionManager.requireActiveSession(expectedGeneration)
+                    app.savePendingAutofillCaptures(expectedGeneration)
+                    if (capture.receipt.saved) {
+                        callback.safeSuccess()
+                    } else if (capture.receipt.outcomeUnknown) {
+                        callback.safeFailure("保存结果未确认，请打开密码库核对，不要重复保存")
+                    } else {
+                        callback.safeFailure("本次保存未完成，请打开应用解锁或重新触发保存")
                     }
-                    callback.safeSuccess()
                 } catch (e: CancellationException) {
-                    callback.safeFailure("自动填充保存已取消")
+                    if (capture.receipt.saved) callback.safeSuccess()
+                    else callback.safeFailure("保存结果未确认，请打开密码库核对，不要重复保存")
                     throw e
                 } catch (_: Exception) {
                     callback.safeFailure("无法保存到密码库，请打开应用后重试")
@@ -288,11 +295,6 @@ class VaultAutofillService : AutofillService() {
             // Locked: stash the capture and bring the app forward so the user can unlock; the save
             // completes right after unlock. Stashing first means the capture survives even if the
             // activity start is suppressed by the OS background-launch limits.
-            val queued = PendingAutofillSave.set(capture)
-            if (!queued) {
-                callback.safeFailure("无法安全暂存账号，请解锁应用后重试")
-                return
-            }
             val launched = runCatching {
                 startActivity(
                     Intent(this, MainActivity::class.java)

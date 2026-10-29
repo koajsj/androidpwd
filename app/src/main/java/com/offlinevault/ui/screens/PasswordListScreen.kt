@@ -1,5 +1,8 @@
 package com.offlinevault.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
+import com.offlinevault.R
 import android.view.autofill.AutofillManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
@@ -42,13 +45,11 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -342,7 +343,7 @@ fun PasswordListScreen(
                             DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
                                 DropdownMenuItem(
                                     text = { Text("导入密码") },
-                                    leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                                    leadingIcon = { Icon(ImageVector.vectorResource(R.drawable.ic_download), contentDescription = null) },
                                     onClick = { showSort = false; launchImport() }
                                 )
                                 DropdownMenuItem(
@@ -892,7 +893,7 @@ private fun PasswordCard(
         if (!selectionMode) {
             IconButton(onClick = onToggleFavorite) {
                 Icon(
-                    if (item.favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    if (item.favorite) Icons.Filled.Star else ImageVector.vectorResource(R.drawable.ic_star_border),
                     contentDescription = if (item.favorite) "取消收藏" else "收藏",
                     tint = favoriteTint
                 )
