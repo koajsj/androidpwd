@@ -63,13 +63,13 @@ object ClipboardHelper {
         return true
     }
 
-    fun copyPlain(context: Context, label: String, value: String) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, value)) }.onSuccess {
+    fun copyPlain(context: Context, label: String, value: String): Boolean {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false
+        return runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, value)) }.onSuccess {
             // The sensitive clip has already been replaced, so a later timeout must not retain a
             // redundant alarm or state record.
             discardPendingClear(context.applicationContext)
-        }
+        }.isSuccess
     }
 
     /** Clears the app-owned sensitive clip immediately when the vault locks. */

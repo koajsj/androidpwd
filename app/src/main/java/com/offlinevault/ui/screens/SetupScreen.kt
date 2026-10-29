@@ -62,7 +62,7 @@ fun SetupScreen(
     onCreate: (master: String, question: String, answer: String, mnemonicPhrase: String, enableBiometric: Boolean, type: CredentialType) -> Unit
 ) {
     val mnemonicManager = remember { MnemonicManager() }
-    var credType by remember { mutableStateOf(CredentialType.PIN6) }
+    var credType by remember { mutableStateOf(CredentialType.PASSWORD) }
     var master by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var question by remember { mutableStateOf("") }
@@ -152,7 +152,7 @@ fun SetupScreen(
         Text("设置密码库", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
-            "解锁凭据用于保护本机加密密码库。应用不会保存该凭据，没有正确的安全问题答案将无法恢复。",
+            "建议使用高熵主密码或长口令。应用不保存凭据；主密码、密保答案和助记词全部丢失后，数据将无法恢复。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -200,7 +200,7 @@ fun SetupScreen(
                 if (credType.isNumeric) {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "短数字密码使用方便，但安全性低于普通密码。建议启用指纹解锁并保持禁止截屏。",
+                        "短 PIN 只有有限组合。取得本地密钥包裹文件的攻击者可以离线猜测，应用内重试延迟和指纹不能消除此风险。推荐改用高熵主密码。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -215,7 +215,7 @@ fun SetupScreen(
                 Text("恢复访问", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "密保答案用于常规恢复；12 个助记词会在下一步生成，仅展示一次，用于最终恢复。答案不区分大小写。",
+                    "密保答案不区分大小写，请勿使用容易查到的个人信息；低熵答案可能被离线猜测。12 个随机助记词将在下一步生成，仅用于最终恢复，请离线备份。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

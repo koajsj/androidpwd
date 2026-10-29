@@ -14,7 +14,7 @@ import com.offlinevault.data.model.VaultEntity
 
 @Database(
     entities = [VaultEntity::class, PasswordEntity::class, PasswordHistoryEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -62,6 +62,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** Additive only: legacy rows have no extension payload and retain their original ciphertext. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE passwords ADD COLUMN encryptedCustomFields TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -84,6 +91,6 @@ abstract class AppDatabase : RoomDatabase() {
                 // Data-safety policy: every schema bump MUST ship a Migration here. Do NOT add
                 // fallbackToDestructiveMigration() — a missing migration should fail loudly,
                 // never silently wipe the encrypted vault.
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
     }
 }

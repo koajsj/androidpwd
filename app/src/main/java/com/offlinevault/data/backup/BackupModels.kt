@@ -16,7 +16,8 @@ data class BackupItem(
     val tags: List<String>,
     val note: String,
     // Default keeps older backups (which lack this field) importable.
-    val favorite: Boolean = false
+    val favorite: Boolean = false,
+    val customFields: List<com.offlinevault.data.model.CustomField>? = null
 )
 
 data class BackupData(
@@ -35,7 +36,7 @@ data class EncryptedBackup(
     val iterations: Int = 0,
     /** KDF algorithm identifier. Empty means the legacy PBKDF2-HMAC-SHA256 format. */
     val kdfVersion: String = "",
-    /** SHA-256 of the decrypted JSON payload. Empty means legacy backup. */
+    /** Legacy v1 checksum, read-only compatibility. New backups rely on GCM authentication. */
     val integrityHash: String = ""
 )
 

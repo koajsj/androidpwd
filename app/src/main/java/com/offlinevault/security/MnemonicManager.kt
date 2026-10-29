@@ -89,7 +89,7 @@ class MnemonicManager {
     companion object {
         const val WORD_COUNT = 12
 
-        private val WORD_LIST = listOf(
+        internal val WORD_LIST = listOf(
             "able", "about", "absent", "access", "acid", "across", "adapt", "admit",
             "adult", "advice", "aerobic", "affair", "afford", "afraid", "again", "agency",
             "agree", "ahead", "aim", "airport", "album", "alert", "alien", "alive",

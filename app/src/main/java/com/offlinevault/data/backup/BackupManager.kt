@@ -5,6 +5,8 @@ import com.google.gson.JsonParser
 import com.offlinevault.autofill.OriginMatcher
 import com.offlinevault.data.db.AppDatabase
 import com.offlinevault.data.model.VaultEntity
+import com.offlinevault.data.model.CustomField
+import com.offlinevault.data.model.CustomFieldCodec
 import com.offlinevault.data.repository.DecryptedPassword
 import com.offlinevault.data.repository.DatabaseWriteGate
 import com.offlinevault.data.repository.PasswordRepository
@@ -52,7 +54,7 @@ class BackupManager(
         private const val MAX_NOTE_CHARS = 128 * 1_024
         private const val MAX_TAGS = 100
         private const val MAX_TAG_CHARS = 256
-        private const val MAX_CSV_FIELD_CHARS = MAX_NOTE_CHARS
+        private const val MAX_CSV_FIELD_CHARS = 1024 * 1024
         private const val PREVIEW_SAMPLE_LIMIT = 5
         // Keep encryption and Room's transaction footprint bounded on low-memory devices. A
         // failed batch is retried item by item, so one malformed external record never discards
@@ -70,7 +72,8 @@ class BackupManager(
         val url: String,
         val tags: List<String>,
         val note: String,
-        val favorite: Boolean = false
+        val favorite: Boolean = false,
+        val customFields: List<CustomField>? = null
     ) {
         fun toDecrypted(id: String = "") = DecryptedPassword(
             id = id,
@@ -84,7 +87,8 @@ class BackupManager(
             strengthScore = 0,
             createdAt = 0,
             updatedAt = 0,
-            favorite = favorite
+            favorite = favorite,
+            customFields = customFields.orEmpty()
         )
     }
 
@@ -112,6 +116,7 @@ class BackupManager(
         }
         val vaults = vaultRepository.allOnce().map { BackupVault(it.id, it.name, it.icon) }
         require(vaults.size <= MAX_IMPORT_VAULTS) { "密码库数量过多，无法导出" }
+        validateBackup(BackupData(vaults, emptyList()))?.let { throw IllegalArgumentException(it) }
         val plainBytes = buildPlainBackupBytes(vaults)
         val salt = CryptoManager.newSalt()
         val kdf = KdfVersions.current()
@@ -125,24 +130,30 @@ class BackupManager(
             } finally {
                 passwordChars.fill('\u0000')
             }
-            val integrityHash = CryptoManager.sha256Hex(plainBytes)
             val encryptedBlob = CryptoManager.encrypt(requireNotNull(key), plainBytes)
             blob = encryptedBlob
+            val verified = CryptoManager.decrypt(requireNotNull(key), encryptedBlob)
+            try {
+                check(java.security.MessageDigest.isEqual(plainBytes, verified)) { "备份加解密校验失败" }
+            } finally { verified.fill(0) }
             CryptoManager.destroyKey(requireNotNull(key))
             key = null
 
             val encodedSalt = CryptoManager.encode(salt)
             val encodedBlob = CryptoManager.encode(encryptedBlob)
             val wrapper = EncryptedBackup(
+                version = 2,
                 salt = encodedSalt,
                 data = encodedBlob,
                 iterations = iterations,
-                kdfVersion = kdf.version,
-                integrityHash = integrityHash
+                kdfVersion = kdf.version
             )
             val result = gson.toJson(wrapper)
-            // Gson serialization is checked without decrypting and materialising the complete
-            // plaintext backup a second time. AES-GCM authenticates the payload on import.
+            require(com.offlinevault.utils.FileIo.isTextWithinImportLimit(result)) {
+                "备份超过 10 MB，无法安全导入；请减少项目或分库存储"
+            }
+            // AES-GCM authenticates the payload. Never publish an unkeyed hash of plaintext:
+            // it can become a fast guessing oracle when the remaining backup content is known.
             val parsed = gson.fromJson(result, EncryptedBackup::class.java)
             check(
                 parsed.format == wrapper.format &&
@@ -152,7 +163,7 @@ class BackupManager(
                     parsed.data == encodedBlob &&
                     parsed.iterations == iterations &&
                     parsed.kdfVersion == kdf.version &&
-                    parsed.integrityHash == integrityHash
+                    parsed.integrityHash.isEmpty()
             ) { "备份封装校验失败" }
             result
         } finally {
@@ -186,6 +197,7 @@ class BackupManager(
             passwordRepository.forEachDecrypted { item ->
                 itemCount++
                 require(itemCount <= MAX_IMPORT_ITEMS) { "密码项目过多，无法导出" }
+                requireExportable(item)
                 writer.beginObject()
                 writer.name("vaultId").value(item.vaultId)
                 writer.name("title").value(item.title)
@@ -197,6 +209,8 @@ class BackupManager(
                 writer.endArray()
                 writer.name("note").value(item.note)
                 writer.name("favorite").value(item.favorite)
+                writer.name("customFields")
+                gson.toJson(item.customFields.toTypedArray(), Array<CustomField>::class.java, writer)
                 writer.endObject()
             }
             writer.endArray()
@@ -210,6 +224,15 @@ class BackupManager(
     }
 
     private class WipeableByteArrayOutputStream : ByteArrayOutputStream() {
+        private val limit = com.offlinevault.utils.FileIo.MAX_IMPORT_BYTES * 3 / 4 - 2048
+        override fun write(value: Int) {
+            require(count < limit) { "备份超过可恢复大小限制" }
+            super.write(value)
+        }
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            require(length <= limit - count) { "备份超过可恢复大小限制" }
+            super.write(bytes, offset, length)
+        }
         fun wipe() {
             buf.fill(0)
             reset()
@@ -276,16 +299,23 @@ class BackupManager(
      */
     suspend fun buildCsvForVault(vaultId: String, slim: Boolean = false): String = SessionManager.withActiveSession {
         val items = passwordRepository.decryptedForVault(vaultId)
+        require(!slim || items.none { it.customFields.isNotEmpty() }) {
+            "浏览器 CSV 无法保存自定义字段或 TOTP，请选择完整 CSV 或加密 JSON"
+        }
         val sb = StringBuilder()
         val header = if (slim) listOf("name", "url", "username", "password")
-        else listOf("name", "url", "username", "password", "note", "tags")
+        else listOf("name", "url", "username", "password", "note", "tags", "custom_fields")
         sb.append(CsvUtils.buildRow(header)).append("\n")
         for (item in items) {
+            requireExportable(item)
             val row = if (slim) listOf(item.title, item.url, item.username, item.password)
-            else listOf(item.title, item.url, item.username, item.password, item.note, item.tags.joinToString("|"))
+            else listOf(item.title, item.url, item.username, item.password, item.note, item.tags.joinToString("|"), CustomFieldCodec.encode(item.customFields))
             sb.append(CsvUtils.buildRow(row)).append("\n")
+            require(sb.length <= com.offlinevault.utils.FileIo.MAX_IMPORT_BYTES) { "CSV 超过 10 MB 导入上限" }
         }
-        sb.toString()
+        sb.toString().also {
+            require(com.offlinevault.utils.FileIo.isTextWithinImportLimit(it)) { "CSV 超过 10 MB 导入上限" }
+        }
     }
 
     // ---- CSV import (Chrome / generic) ------------------------------------
@@ -386,7 +416,8 @@ class BackupManager(
                 url = item.url,
                 tags = item.tags,
                 note = item.note,
-                favorite = item.favorite
+                favorite = item.favorite,
+                customFields = item.customFields
             )
         }
 
@@ -422,6 +453,7 @@ class BackupManager(
         val passIdx = header.indexOfAny("password", "pass", "login_password", "密码")
         val noteIdx = header.indexOfAny("note", "notes", "备注")
         val tagsIdx = header.indexOfAny("tags", "tag", "标签")
+        val fieldsIdx = header.indexOfAny("custom_fields")
 
         if (passIdx < 0) throw IllegalArgumentException("CSV 中缺少 “password” 列")
 
@@ -451,7 +483,8 @@ class BackupManager(
                     password = password,
                     url = url,
                     tags = tags,
-                    note = note
+                    note = note,
+                    customFields = if (fieldsIdx >= 0) CustomFieldCodec.decode(at(fieldsIdx)) else null
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -572,7 +605,8 @@ class BackupManager(
                                             url = candidate.url,
                                             tags = candidate.tags,
                                             note = candidate.note,
-                                            favorite = candidate.favorite
+                                            favorite = candidate.favorite,
+                                            customFields = candidate.customFields
                                         )
                                         updated++
                                         removeIndexedExisting(seen, existing.id)
@@ -711,6 +745,7 @@ class BackupManager(
         require(wrapper.format == "offline-vault-backup" && wrapper.encrypted) {
             "这不是加密备份文件"
         }
+        require(wrapper.version in 1..2) { "不支持此备份版本，请使用兼容版本导入" }
         require(wrapper.salt.isNotBlank() && wrapper.data.isNotBlank()) {
             "加密备份缺少必要数据"
         }
@@ -735,12 +770,11 @@ class BackupManager(
                 } finally {
                     CryptoManager.destroyKey(key)
                 }
-                if (wrapper.integrityHash.isNotBlank() &&
-                    !wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)
-                ) {
-                    throw IllegalArgumentException("备份完整性校验失败")
-                }
                 return try {
+                    require(wrapper.integrityHash.isBlank() ||
+                        wrapper.integrityHash.equals(CryptoManager.sha256Hex(plainBytes), ignoreCase = true)) {
+                        "备份完整性校验失败"
+                    }
                     InputStreamReader(
                         ByteArrayInputStream(plainBytes),
                         Charsets.UTF_8
@@ -779,10 +813,10 @@ class BackupManager(
     }
 
     private fun DecryptedPassword.matchKeys(): Set<String> =
-        buildMatchKeys(title, username, password, url)
+        buildMatchKeys(username, password, url)
 
     private fun ImportCandidate.matchKeys(): Set<String> =
-        buildMatchKeys(title, username, password, url)
+        buildMatchKeys(username, password, url)
 
     private fun buildCandidateIndex(items: List<DecryptedPassword>): MutableMap<String, MutableList<DecryptedPassword>> {
         val index = linkedMapOf<String, MutableList<DecryptedPassword>>()
@@ -838,26 +872,24 @@ class BackupManager(
         val candidateUser = candidate.username.normalizedUser()
         if (existingUser != candidateUser) return false
 
-        val existingHost = comparableHost(existing.url)
-        val candidateHost = comparableHost(candidate.url)
+        val existingHost = comparableTarget(existing.url)
+        val candidateHost = comparableTarget(candidate.url)
         if (existingHost == null || candidateHost == null || existingHost != candidateHost) return false
         if (existingUser.isNotEmpty()) return true
-        return existing.password.trim().isNotEmpty() &&
-            existing.password.trim() == candidate.password.trim() &&
-            candidate.password.trim().isNotEmpty()
+        return existing.password.isNotEmpty() && existing.password == candidate.password
     }
 
-    private fun buildMatchKeys(title: String, username: String, password: String, url: String): Set<String> {
+    private fun buildMatchKeys(username: String, password: String, url: String): Set<String> {
         val user = username.normalizedUser()
-        val host = comparableHost(url)
+        val host = comparableTarget(url)
         return buildSet {
             if (user.isNotEmpty() && host != null) add("host:$host|user:$user")
-            if (user.isEmpty() && host != null && password.trim().isNotEmpty()) add("host:$host|empty-user")
+            if (user.isEmpty() && host != null && password.isNotEmpty()) add("host:$host|empty-user")
         }
     }
 
-    private fun comparableHost(url: String): String? =
-        OriginMatcher.hostFromUrl(url)?.removePrefix("www.")
+    private fun comparableTarget(url: String): String? =
+        OriginMatcher.canonicalTarget(url)
 
     private fun normalizeHeader(value: String): String =
         value.trim().trim('\uFEFF').lowercase(Locale.ROOT).replace(" ", "_").replace("-", "_")
@@ -867,11 +899,12 @@ class BackupManager(
         return indexOfFirst { it in wanted }
     }
 
-    private fun String.normalizedUser(): String = trim().lowercase(Locale.ROOT)
+    private fun String.normalizedUser(): String = trim()
 
     private fun isValidImportItem(item: BackupItem): Boolean = try {
         item.vaultId.isNotBlank() &&
             item.vaultId.length <= MAX_VAULT_ID_CHARS &&
+            (item.customFields == null || runCatching { CustomFieldCodec.validate(item.customFields) }.isSuccess) &&
             isValidCandidateFields(
                 item.title,
                 item.username,
@@ -883,6 +916,13 @@ class BackupManager(
     } catch (_: Exception) {
         // Gson can materialise null into Kotlin non-null properties from hostile JSON.
         false
+    }
+
+    private fun requireExportable(item: DecryptedPassword) {
+        require(isValidCandidateFields(item.title, item.username, item.password, item.url, item.tags, item.note)) {
+            "记录超过导入字段限制，无法生成可恢复的备份"
+        }
+        CustomFieldCodec.validate(item.customFields)
     }
 
     private fun isValidCandidateFields(

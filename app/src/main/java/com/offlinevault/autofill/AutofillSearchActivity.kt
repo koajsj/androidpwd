@@ -153,8 +153,7 @@ class AutofillSearchActivity : FragmentActivity() {
         }
 
         fun matchesCurrentTarget(url: String): Boolean =
-            (!webDomain.isNullOrBlank() && OriginMatcher.matches(url, webDomain)) ||
-                (!packageName.isNullOrBlank() && OriginMatcher.matchesApp(url, packageName))
+            OriginMatcher.matchesRequest(url, webDomain, packageName)
 
         fun loadCandidates(includeAll: Boolean) {
             if (includeAll && allCandidatesLoaded.value) return
@@ -170,7 +169,7 @@ class AutofillSearchActivity : FragmentActivity() {
                 val result = withContext(Dispatchers.IO) {
                     try {
                         if (includeAll) {
-                            app.container.passwordRepository.allDecryptedSkippingCorrupt().map { candidate ->
+                            app.container.passwordRepository.allDecryptedSkippingCorrupt(includeExtras = false).map { candidate ->
                                 AutofillCandidate(candidate, matchesCurrentTarget(candidate.url))
                             }.sortedByDescending { it.matchesTarget }
                         } else {

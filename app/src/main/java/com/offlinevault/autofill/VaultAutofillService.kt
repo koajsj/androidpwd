@@ -61,8 +61,8 @@ class VaultAutofillService : AutofillService() {
     ) {
         /** Stable identifier for this target: the web origin if present, else the native app. */
         val identifier: String?
-            get() = webDomain?.let(OriginMatcher::normalizeHost)
-                ?: packageName?.takeIf { it.isNotBlank() }?.let(OriginMatcher::appIdentifier)
+            get() = if (webDomain != null) OriginMatcher.normalizeHost(webDomain)
+                else packageName?.takeIf { it.isNotBlank() }?.let(OriginMatcher::appIdentifier)
 
         fun fillableIds(): List<AutofillId> = listOfNotNull(usernameId, passwordId)
     }
@@ -155,7 +155,7 @@ class VaultAutofillService : AutofillService() {
     private fun parseStructure(structure: AssistStructure): ParsedFields {
         val usernameCandidates = mutableListOf<FieldCandidate>()
         val passwordCandidates = mutableListOf<FieldCandidate>()
-        var webDomain: String? = null
+        val webDomains = linkedSetOf<String>()
         val packageName = structure.activityComponent?.packageName
         var order = 0
         var visitedNodes = 0
@@ -163,9 +163,7 @@ class VaultAutofillService : AutofillService() {
         fun traverse(node: AssistStructure.ViewNode, depth: Int) {
             if (visitedNodes >= MAX_STRUCTURE_NODES || depth > MAX_STRUCTURE_DEPTH) return
             visitedNodes++
-            if (node.webDomain?.isNotEmpty() == true && webDomain == null) {
-                webDomain = node.webDomain
-            }
+            node.webDomain?.takeIf { it.isNotEmpty() }?.let(webDomains::add)
             val autofillId = node.autofillId
             if (autofillId != null && node.autofillType == View.AUTOFILL_TYPE_TEXT) {
                 val hints = node.autofillHints?.map { it.lowercase(Locale.ROOT) } ?: emptyList()
@@ -225,7 +223,7 @@ class VaultAutofillService : AutofillService() {
                 .filter { it != primaryPassword?.id }
                 .distinct()
                 .toList(),
-            webDomain = webDomain,
+            webDomain = OriginMatcher.resolveWebDomain(webDomains),
             packageName = packageName,
             usernameValue = usernameValue,
             passwordValue = passwordValue

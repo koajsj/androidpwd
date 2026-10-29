@@ -50,8 +50,8 @@ data class SecurityReport(
 }
 
 /**
- * Fully offline password-health analysis. The four score components are intentionally explicit:
- * length 30%, complexity 30%, uniqueness 20%, and update age 20%.
+ * Fully offline analysis. Length, complexity and uniqueness keep their relative 30:30:20
+ * weights. Age is an independent reminder, never evidence that a credential is compromised.
  */
 object PasswordSecurityAnalyzer {
     private const val WEAK_SCORE_BELOW = 40
@@ -80,7 +80,7 @@ object PasswordSecurityAnalyzer {
             .mapTo(linkedSetOf()) { it.id }
         val staleCutoff = nowMillis - STALE_AFTER_DAYS * MILLIS_PER_DAY
         val staleIds = candidates
-            .filter { it.updatedAt <= 0L || it.updatedAt < staleCutoff }
+            .filter { it.updatedAt > 0L && it.updatedAt < staleCutoff }
             .mapTo(linkedSetOf()) { it.id }
 
         val lengthScore = candidates.map { lengthScore(it.passwordLength) }.average().toInt()
@@ -92,13 +92,8 @@ object PasswordSecurityAnalyzer {
             !it.passwordFingerprint.isNullOrBlank() && it.id !in reusedIds
         }
         val uniquenessScore = uniqueNonEmptyCount * 100 / candidates.size
-        val freshnessScore = candidates.map { freshnessScore(it.updatedAt, nowMillis) }.average().toInt()
-        val totalScore = (
-            lengthScore * 0.30 +
-                complexityScore * 0.30 +
-                uniquenessScore * 0.20 +
-                freshnessScore * 0.20
-            ).toInt().coerceIn(0, 100)
+        val totalScore = ((lengthScore * 30 + complexityScore * 30 + uniquenessScore * 20) / 80)
+            .coerceIn(0, 100)
 
         val risks = buildList {
             if (weakIds.isNotEmpty()) add(
@@ -119,16 +114,6 @@ object PasswordSecurityAnalyzer {
                     title = "重复使用的密码",
                     description = "多个账号共用了同一个密码。",
                     recommendation = "为每个账号生成并保存不同的密码。"
-                )
-            )
-            if (staleIds.isNotEmpty()) add(
-                PasswordRisk(
-                    type = PasswordRiskType.STALE_PASSWORD,
-                    level = SecurityLevel.MEDIUM,
-                    affectedCredentialIds = staleIds,
-                    title = "长期未更新",
-                    description = "部分密码超过 180 天未更新。",
-                    recommendation = "优先更新重要账号和已发生过泄露的服务密码。"
                 )
             )
         }
@@ -158,16 +143,6 @@ object PasswordSecurityAnalyzer {
             3 -> 75
             2 -> 45
             else -> 10
-        }
-    }
-
-    private fun freshnessScore(updatedAt: Long, nowMillis: Long): Int {
-        if (updatedAt <= 0L || updatedAt > nowMillis) return 20
-        val ageDays = (nowMillis - updatedAt) / MILLIS_PER_DAY
-        return when {
-            ageDays <= STALE_AFTER_DAYS -> 100
-            ageDays <= 365L -> 60
-            else -> 20
         }
     }
 

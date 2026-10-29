@@ -23,6 +23,15 @@ interface PasswordDao {
     @Update
     suspend fun update(item: PasswordEntity)
 
+    @Transaction
+    suspend fun updateBatch(items: List<PasswordEntity>) {
+        items.forEach { update(it) }
+    }
+
+    @Transaction
+    suspend fun softDeleteBatch(ids: List<String>, deletedAt: Long): Int =
+        ids.chunked(900).sumOf { softDeleteMany(it, deletedAt) }
+
     /** Updates a credential and its previous-password history as one atomic operation. */
     @Transaction
     suspend fun updateWithHistory(

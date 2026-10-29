@@ -9,8 +9,38 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import org.junit.Before
+import org.junit.After
+import org.junit.Assert.assertTrue
+import com.offlinevault.security.CryptoManager
+import com.offlinevault.security.SessionManager
+import com.offlinevault.security.VaultLockedException
 
 class DatabaseWriteGateTest {
+    @Before fun unlock() { SessionManager.unlock(CryptoManager.newDataEncryptionKey()) }
+    @After fun lock() { SessionManager.lock() }
+
+    @Test fun queuedWriterCannotBorrowANewSession() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val first = async {
+            DatabaseWriteGate.withWrite { entered.complete(Unit); release.await() }
+        }
+        entered.await()
+        var wrote = false
+        val attempted = CompletableDeferred<Unit>()
+        val second = async {
+            attempted.complete(Unit)
+            runCatching { DatabaseWriteGate.withWrite { wrote = true } }
+        }
+        attempted.await()
+        SessionManager.lock()
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        release.complete(Unit)
+        first.await()
+        assertTrue(second.await().exceptionOrNull() is VaultLockedException)
+        assertFalse(wrote)
+    }
     @Test fun nestedRepositoryWritesSurviveTransactionDispatcherHandoff() = runBlocking {
         val result = withTimeout(2_000) {
             DatabaseWriteGate.withWrite {

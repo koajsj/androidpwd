@@ -23,6 +23,6 @@ class AppContainer(context: Context) {
     val integrityChecker = VaultIntegrityChecker(database)
 
     val vaultRepository = VaultRepository(database.vaultDao())
-    val passwordRepository = PasswordRepository(database.passwordDao())
+    val passwordRepository = PasswordRepository(database.passwordDao(), database)
     val backupManager = BackupManager(vaultRepository, passwordRepository, database)
 }

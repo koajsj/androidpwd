@@ -109,6 +109,8 @@ import com.offlinevault.utils.ImportFormatDetector
 import com.offlinevault.utils.toUserMessage
 import com.offlinevault.viewmodel.PasswordListViewModel
 import com.offlinevault.viewmodel.SortOrder
+import com.offlinevault.viewmodel.ListFilter
+import com.offlinevault.ui.components.VaultTextField
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -129,6 +131,8 @@ fun PasswordListScreen(
     val errorMessage by viewModel.cuowuXinxi.collectAsStateWithLifecycle()
     val selectedIds by viewModel.selectedIds.collectAsStateWithLifecycle()
     val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
+    val listFilter by viewModel.listFilter.collectAsStateWithLifecycle()
+    val batchBusy by viewModel.batchBusy.collectAsStateWithLifecycle()
     val selectionMode = selectedIds.isNotEmpty()
 
     val context = LocalContext.current
@@ -142,6 +146,9 @@ fun PasswordListScreen(
     var showPasteImport by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
+    var showBatchMenu by remember { mutableStateOf(false) }
+    var showBatchTags by remember { mutableStateOf(false) }
+    var batchTags by remember { mutableStateOf("") }
     var showVaultPicker by remember { mutableStateOf(false) }
     var showCreateVault by remember { mutableStateOf(false) }
     var showRenameVault by remember { mutableStateOf(false) }
@@ -295,7 +302,19 @@ fun PasswordListScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { confirmBatchDelete = true }) {
+                        Box {
+                            IconButton(onClick = { showBatchMenu = true }, enabled = !batchBusy) { Icon(Icons.Filled.MoreVert, contentDescription = "批量管理") }
+                            DropdownMenu(expanded = showBatchMenu, onDismissRequest = { showBatchMenu = false }) {
+                                listOf("收藏所选" to true, "取消收藏" to false).forEach { (title, favorite) ->
+                                    DropdownMenuItem(text = { Text(title) }, onClick = {
+                                        showBatchMenu = false
+                                        viewModel.updateSelected(favorite = favorite) { ok, count -> toast(if (ok) "已更新 $count 项" else "更新失败，未完成批量修改") }
+                                    })
+                                }
+                                DropdownMenuItem(text = { Text("替换所选标签") }, onClick = { showBatchMenu = false; batchTags = ""; showBatchTags = true })
+                            }
+                        }
+                        IconButton(onClick = { confirmBatchDelete = true }, enabled = !batchBusy) {
                             Icon(Icons.Filled.Delete, contentDescription = "删除所选", tint = MaterialTheme.colorScheme.error)
                         }
                     },
@@ -404,7 +423,7 @@ fun PasswordListScreen(
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::shezhiChaxun,
-                placeholder = { Text("搜索标题、用户名或网址…") },
+                placeholder = { Text("搜索标题、账号、网址或标签…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) IconButton(onClick = { viewModel.shezhiChaxun("") }) {
@@ -422,6 +441,12 @@ fun PasswordListScreen(
                 )
             )
 
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(ListFilter.entries.toList()) { filter ->
+                    FilterChip(selected = listFilter == filter, onClick = { viewModel.setFilter(filter) },
+                        label = { Text(when (filter) { ListFilter.ALL -> "全部"; ListFilter.FAVORITES -> "收藏"; ListFilter.WEAK -> "弱密码" }) })
+                }
+            }
             if (tags.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -455,10 +480,10 @@ fun PasswordListScreen(
                         Icon(Icons.Filled.Search, contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(32.dp))
                         Spacer(Modifier.height(16.dp))
-                        Text(if (query.isBlank() && activeTag == null) "第一项密码，从这里开始" else "没有匹配的密码",
+                        Text(if (query.isBlank() && activeTag == null && listFilter == ListFilter.ALL) "第一项密码，从这里开始" else "没有匹配的密码",
                             style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
-                        Text(if (query.isBlank() && activeTag == null) "点击“添加密码”，或从右上角菜单导入。" else "试试其他关键词，或取消标签筛选。",
+                        Text(if (query.isBlank() && activeTag == null && listFilter == ListFilter.ALL) "点击“添加密码”，或从右上角菜单导入。" else "试试其他关键词，或取消筛选。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -710,6 +735,17 @@ fun PasswordListScreen(
         )
     }
 
+    if (showBatchTags) {
+        AlertDialog(onDismissRequest = { showBatchTags = false }, title = { Text("替换所选标签") },
+            text = { Column {
+                Text("将替换 ${selectedIds.size} 项的全部标签；留空会清除标签。每行一个标签。")
+                VaultTextField(batchTags, { batchTags = it }, "新标签", singleLine = false)
+            } }, confirmButton = { TextButton(onClick = {
+                showBatchTags = false
+                viewModel.updateSelected(tags = batchTags) { ok, count -> toast(if (ok) "已更新 $count 项标签" else "标签更新失败") }
+            }, enabled = !batchBusy) { Text("确认替换") } },
+            dismissButton = { TextButton(onClick = { showBatchTags = false }) { Text("取消") } })
+    }
     if (confirmBatchDelete) {
         AlertDialog(
             onDismissRequest = { confirmBatchDelete = false },

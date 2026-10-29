@@ -64,6 +64,7 @@ class SecurityPreferences(private val context: Context) {
         val CLIPBOARD_CLEAR_SECONDS = intPreferencesKey("clipboard_clear_seconds")
         val AUTOFILL_BANNER_DISMISSED = booleanPreferencesKey("autofill_banner_dismissed")
         val HEALTH_CHECK_ENABLED = booleanPreferencesKey("health_check_enabled")
+        val LAST_BACKUP_WRITTEN_AT = longPreferencesKey("last_backup_written_at")
 
         val FAILED_ATTEMPTS = intPreferencesKey("failed_attempts")
         val LAST_FAILED_AT = longPreferencesKey("last_failed_at")
@@ -74,6 +75,13 @@ class SecurityPreferences(private val context: Context) {
     }
 
     // ---- Security material -------------------------------------------------
+
+    val lastBackupWrittenAtFlow: Flow<Long?> = context.dataStore.data
+        .map<Preferences, Long?> { it[Keys.LAST_BACKUP_WRITTEN_AT] ?: 0L }.catch { emit(null) }
+
+    suspend fun recordBackupWritten() {
+        context.dataStore.edit { it[Keys.LAST_BACKUP_WRITTEN_AT] = System.currentTimeMillis() }
+    }
 
     val initializedFlow: Flow<Boolean> =
         context.dataStore.data

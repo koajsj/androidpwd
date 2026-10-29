@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 import java.util.UUID
 
 /**
@@ -38,5 +39,6 @@ data class PasswordEntity(
     // Trashed rows are hidden from every normal query and auto-purged after the retention window.
     val deletedAt: Long = 0L,
     // Pinned/favorite flag. Favorites sort to the top of the list regardless of the chosen order.
-    val favorite: Boolean = false
+    val favorite: Boolean = false,
+    @ColumnInfo(defaultValue = "''") val encryptedCustomFields: String = ""
 )

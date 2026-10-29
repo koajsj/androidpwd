@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import javax.crypto.Cipher
 
 enum class AppLockState { LOADING, SETUP, LOCKED, UNLOCKED }
@@ -76,6 +77,7 @@ class AuthViewModel(
     val setupInProgress: StateFlow<Boolean> = _setupInProgress.asStateFlow()
     private var setupJob: Job? = null
     private var unlockJob: Job? = null
+    private var retryDelayJob: Job? = null
 
     init {
         refreshRisk()
@@ -129,6 +131,7 @@ class AuthViewModel(
             }
             when (result) {
                 is UnlockResult.Success -> {
+                    retryDelayJob?.cancel()
                     withContext(Dispatchers.Default) {
                         recordSuccessfulCredentialAuthenticationSafely()
                     }
@@ -154,6 +157,25 @@ class AuthViewModel(
                     )
             }
             if (result !is UnlockResult.Success) refreshRisk()
+            if (result is UnlockResult.Delayed) {
+                retryDelayJob?.cancel()
+                // UI cooldown must expire as well as KeyManager's persisted throttle. Use a
+                // monotonic deadline so a suspended app catches up when it returns foreground.
+                val retryAt = System.nanoTime() / 1_000_000 + result.secondsRemaining * 1000L
+                retryDelayJob = viewModelScope.launch {
+                    while (_unlockState.value.delaySeconds > 0) {
+                        delay(1000)
+                        // A successful biometric unlock may already have reset the UI state.
+                        if (_unlockState.value.delaySeconds == 0) break
+                        val remaining = ((retryAt - System.nanoTime() / 1_000_000 + 999)
+                            .coerceAtLeast(0) / 1000).toInt()
+                        _unlockState.value = _unlockState.value.copy(
+                            delaySeconds = remaining,
+                            errorMessage = if (remaining > 0) "尝试次数过多，请在 ${remaining} 秒后重试" else null
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -205,7 +227,10 @@ class AuthViewModel(
                 when (val result = withContext(Dispatchers.Default) {
                     keyManager.unlockWithBiometricCipher(cipher)
                 }) {
-                    is UnlockResult.Success -> _unlockState.value = UnlockUiState()
+                    is UnlockResult.Success -> {
+                        retryDelayJob?.cancel()
+                        _unlockState.value = UnlockUiState()
+                    }
                     is UnlockResult.Error ->
                         _unlockState.value = _unlockState.value.copy(errorMessage = result.message)
                     else -> _unlockState.value = _unlockState.value.copy(errorMessage = "指纹解锁失败")

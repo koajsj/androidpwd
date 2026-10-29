@@ -27,7 +27,7 @@ enum class CredentialType(
         if (isNumeric) value.filter { it.isDigit() }.take(maxLength) else value.take(maxLength)
 
     companion object {
-        val setupOptions: List<CredentialType> = entries.toList()
+        val setupOptions: List<CredentialType> = listOf(PASSWORD, PIN6, PIN4)
 
         fun fromKey(key: String?): CredentialType =
             entries.firstOrNull { it.key == key } ?: PIN6

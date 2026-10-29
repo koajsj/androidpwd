@@ -11,6 +11,7 @@ import com.offlinevault.data.dao.PasswordDao
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.security.VaultLockedException
 import com.offlinevault.viewmodel.PasswordDetailViewModel
+import com.offlinevault.viewmodel.PasswordEditViewModel
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.SessionManager
@@ -19,6 +20,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -141,6 +143,70 @@ class MigrationTest {
             release.complete(Unit)
             withTimeout(2_000) { finished.await() }
             withContext(Dispatchers.Main) { assertTrue(viewModel.history.value.isEmpty()) }
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            database.close()
+        }
+    }
+
+    @Test
+    fun editFormRejectsChangesUntilLoadedAndWhileSaving() = runBlocking {
+        SessionManager.unlock(CryptoManager.newDataEncryptionKey())
+        val database = AppDatabase.openForMigrationTest(context, testDb)
+        val store = ViewModelStore()
+        try {
+            val vaults = VaultRepository(database.vaultDao())
+            val vault = vaults.ensureDefault()
+            val repository = PasswordRepository(database.passwordDao())
+            val id = repository.save(null, vault.id, "Example", "user", "original", "", emptyList(), "")
+            val readEntered = CompletableDeferred<Unit>()
+            val releaseRead = CompletableDeferred<Unit>()
+            val writeEntered = CompletableDeferred<Unit>()
+            val releaseWrite = CompletableDeferred<Unit>()
+            val saved = CompletableDeferred<Boolean>()
+            val delayed = object : PasswordDao by database.passwordDao() {
+                override suspend fun getById(id: String): PasswordEntity? {
+                    readEntered.complete(Unit)
+                    releaseRead.await()
+                    return database.passwordDao().getById(id)
+                }
+
+                override suspend fun updateWithHistory(
+                    item: PasswordEntity,
+                    historyEntry: com.offlinevault.data.model.PasswordHistoryEntity?,
+                    historyKeep: Int
+                ) {
+                    writeEntered.complete(Unit)
+                    releaseWrite.await()
+                    database.passwordDao().updateWithHistory(item, historyEntry, historyKeep)
+                }
+            }
+            val editor = withContext(Dispatchers.Main) {
+                PasswordEditViewModel(PasswordRepository(delayed), vaults).also {
+                    store.put("edit", it)
+                    it.initialize(vault.id, id)
+                }
+            }
+            withTimeout(5_000) { readEntered.await() }
+            withContext(Dispatchers.Main) {
+                editor.setPassword("must-not-replace-loading-form")
+                assertEquals("", editor.form.value.password)
+                editor.save { ok, _ -> assertFalse(ok) }
+            }
+            releaseRead.complete(Unit)
+            withTimeout(5_000) { editor.form.first { it.password == "original" } }
+            withContext(Dispatchers.Main) {
+                editor.setPassword("updated")
+                editor.save { ok, _ -> saved.complete(ok) }
+            }
+            withTimeout(5_000) { writeEntered.await() }
+            withContext(Dispatchers.Main) {
+                editor.setPassword("must-not-be-silently-lost")
+                assertEquals("updated", editor.form.value.password)
+            }
+            releaseWrite.complete(Unit)
+            assertTrue(withTimeout(5_000) { saved.await() })
+            assertEquals("updated", repository.getDecrypted(id)?.password)
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
             database.close()

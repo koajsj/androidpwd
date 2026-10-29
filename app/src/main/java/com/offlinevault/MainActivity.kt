@@ -462,7 +462,8 @@ private fun MainNavHost(
             PasswordHealthScreen(
                 viewModel = vm,
                 onBack = { navController.popBackStack() },
-                onOpenItem = { navController.navigate("detail/$it") }
+                onOpenItem = { navController.navigate("detail/$it") },
+                onEditItem = { navController.navigate("edit/$it") }
             )
         }
     }

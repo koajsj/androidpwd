@@ -37,7 +37,7 @@ object ViewModelFactory {
             TrashViewModel(app().container.passwordRepository)
         }
         initializer {
-            PasswordHealthViewModel(app().container.passwordRepository)
+            PasswordHealthViewModel(app().container.passwordRepository, app().container.securityPreferences)
         }
         initializer {
             SettingsViewModel(

@@ -39,6 +39,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.offlinevault.security.CredentialType
 import com.offlinevault.security.RiskLevel
 import com.offlinevault.security.RiskScore
@@ -61,6 +63,7 @@ fun UnlockScreen(
 ) {
     var password by remember { mutableStateOf("") }
     var reveal by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { reveal = false }
 
     // Shake the card horizontally whenever shakeTrigger changes (wrong password), then clear input.
     val shake = remember { Animatable(0f) }

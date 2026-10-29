@@ -59,7 +59,8 @@ object CryptoManager {
 
     /**
      * PBKDF2 iteration count for newly created material. 300k keeps unlock responsive on older
-     * devices while staying comfortably above the OWASP minimum for PBKDF2-HMAC-SHA256. The count
+     * devices. This cost does not make a short PIN or a guessable recovery answer resistant to
+     * offline guessing by an attacker who obtains the wrapped key. The count
      * is stored per vault, so it can be raised later without locking existing vaults out. Always run
      * on a background dispatcher so the one-off cost stays off the main thread.
      */

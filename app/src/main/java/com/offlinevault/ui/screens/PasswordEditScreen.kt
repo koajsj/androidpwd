@@ -50,6 +50,7 @@ import com.offlinevault.ui.components.PasswordVisualField
 import com.offlinevault.ui.components.PrimaryButton
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.SectionHeading
+import com.offlinevault.ui.components.CustomFieldEditor
 import com.offlinevault.ui.components.StrengthMeter
 import com.offlinevault.ui.components.VaultTextField
 import com.offlinevault.viewmodel.PasswordEditViewModel
@@ -68,7 +69,8 @@ fun PasswordEditScreen(
     val form by viewModel.form.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
-    val editable = !isSaving
+    val isReady by viewModel.isReady.collectAsStateWithLifecycle()
+    val editable = isReady && !isSaving
     val hasUnsavedChanges by viewModel.hasUnsavedChanges.collectAsStateWithLifecycle()
 
     var reveal by remember { mutableStateOf(false) }
@@ -184,6 +186,10 @@ fun PasswordEditScreen(
                 }
             }
 
+            Spacer(Modifier.height(24.dp))
+            CustomFieldEditor(form.customFields, editable) { fields ->
+                viewModel.update { it.copy(customFields = fields) }
+            }
             Spacer(Modifier.height(24.dp))
             PrimaryButton(
                 text = if (isSaving) "正在保存…" else "保存",

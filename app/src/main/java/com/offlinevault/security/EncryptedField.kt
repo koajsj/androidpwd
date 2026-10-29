@@ -7,6 +7,9 @@ package com.offlinevault.security
  * through AES-GCM AAD, preventing valid ciphertext from being moved between fields or records.
  */
 object EncryptedField {
+    /** Length-prefix IDs so imported identifiers cannot create an ambiguous AAD context. */
+    fun customFieldsContext(credentialId: String, vaultId: String): String =
+        "credential-custom:${vaultId.length}:$vaultId:${credentialId.length}:$credentialId"
     private const val PREFIX_V1 = "enc:v1:"
     private const val PREFIX_V2 = "enc:v2:"
     // Password-history rows used to reuse the live credential envelope. v3 gives every history

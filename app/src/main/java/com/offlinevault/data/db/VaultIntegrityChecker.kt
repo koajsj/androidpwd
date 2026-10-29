@@ -54,6 +54,11 @@ class VaultIntegrityChecker(private val database: AppDatabase) {
                     if (row.encryptedNote.isNotBlank()) {
                         EncryptedField.decryptSecret(row.encryptedNote, credentialContext(row.id, "note"))
                     }
+                    if (row.encryptedCustomFields.isNotEmpty()) {
+                        com.offlinevault.data.model.CustomFieldCodec.decode(EncryptedField.decryptSecret(
+                            row.encryptedCustomFields, EncryptedField.customFieldsContext(row.id, row.vaultId)
+                        ))
+                    }
                 }.isFailure
             }
             val invalidHistory = database.passwordDao().allHistoryOnce().count { row ->

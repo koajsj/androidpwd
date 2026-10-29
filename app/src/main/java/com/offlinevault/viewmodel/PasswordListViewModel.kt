@@ -37,6 +37,7 @@ import java.util.Locale
 
 /** List ordering options. Favorites always pin above these. */
 enum class SortOrder { UPDATED, TITLE, STRENGTH }
+enum class ListFilter { ALL, FAVORITES, WEAK }
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class PasswordListViewModel(
@@ -95,6 +96,9 @@ class PasswordListViewModel(
     private val paixu = MutableStateFlow(SortOrder.UPDATED)
     val sortOrder: StateFlow<SortOrder> = paixu.asStateFlow()
     fun setSortOrder(order: SortOrder) { paixu.value = order }
+    private val filter = MutableStateFlow(ListFilter.ALL)
+    val listFilter = filter.asStateFlow()
+    fun setFilter(value: ListFilter) { filter.value = value; clearSelection() }
 
     // Vault mutations are destructive or change the active destination. Keep them serial so a
     // rapid double-tap cannot create duplicate vaults or race a deletion against a rename.
@@ -105,6 +109,7 @@ class PasswordListViewModel(
             SessionManager.unlocked.collect { unlocked ->
                 if (!unlocked) {
                     vaultMutationJob?.cancel()
+                    batchJob?.cancel()
                     mimakuId.value = ""
                     _mimakuMingcheng.value = ""
                     chaxun.value = ""
@@ -133,9 +138,12 @@ class PasswordListViewModel(
             .shareIn(viewModelScope, SharingStarted.Eagerly, replay = 1)
 
     val tiaomu: StateFlow<List<PasswordEntity>> =
-        combine(currentVaultRows, chaxunFangdou, biaoqianGuolv, paixu) { rows, cxWen, biaoqian, sort ->
+        combine(currentVaultRows, chaxunFangdou, biaoqianGuolv, paixu, filter) { rows, cxWen, biaoqian, sort, selectedFilter ->
             // A tag and a typed query are independent filters.
             rows.asSequence()
+                .filter { selectedFilter == ListFilter.ALL ||
+                    selectedFilter == ListFilter.FAVORITES && it.favorite ||
+                    selectedFilter == ListFilter.WEAK && it.strengthScore < 40 }
                 .filter { item -> biaoqian == null || item.hasTag(biaoqian) }
                 .filter { item -> cxWen.isBlank() || item.matchesQuery(cxWen) }
                 .toList()
@@ -172,6 +180,9 @@ class PasswordListViewModel(
     // ---- Selection (batch operations) ----
     private val xuanzhong = MutableStateFlow<Set<String>>(emptySet())
     val selectedIds: StateFlow<Set<String>> = xuanzhong.asStateFlow()
+    private var batchJob: Job? = null
+    private val _batchBusy = MutableStateFlow(false)
+    val batchBusy = _batchBusy.asStateFlow()
 
     fun toggleSelected(id: String) {
         val cur = xuanzhong.value
@@ -181,18 +192,42 @@ class PasswordListViewModel(
     fun clearSelection() { xuanzhong.value = emptySet() }
 
     fun deleteSelected(onResult: (Boolean, Int) -> Unit) {
+        if (batchJob?.isActive == true) return
         val ids = xuanzhong.value.toList()
+        val vaultId = mimakuId.value
         if (ids.isEmpty()) return
-        viewModelScope.launch {
+        batchJob = viewModelScope.launch {
+            _batchBusy.value = true
             try {
-                mimaCangku.deleteMany(ids)
+                val count = mimaCangku.deleteMany(ids, vaultId)
                 xuanzhong.value = emptySet()
-                onResult(true, ids.size)
+                onResult(true, count)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 onResult(false, 0)
+            } finally {
+                _batchBusy.value = false
             }
+        }
+    }
+
+    fun updateSelected(favorite: Boolean? = null, tags: String? = null, onResult: (Boolean, Int) -> Unit) {
+        if (batchJob?.isActive == true) return
+        val ids = xuanzhong.value
+        val vaultId = mimakuId.value
+        if (ids.isEmpty()) return
+        batchJob = viewModelScope.launch {
+            _batchBusy.value = true
+            try {
+                val count = mimaCangku.updateMany(vaultId, ids, favorite, tags?.let { TagCodec.normalize(it.lines()) })
+                xuanzhong.value = emptySet()
+                onResult(true, count)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onResult(false, 0)
+            } finally { _batchBusy.value = false }
         }
     }
 
@@ -203,7 +238,7 @@ class PasswordListViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Non-critical; ignore.
+                _cuowuXinxi.value = "收藏操作失败，请重试"
             }
         }
     }

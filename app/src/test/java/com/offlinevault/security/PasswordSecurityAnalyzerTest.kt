@@ -38,7 +38,17 @@ class PasswordSecurityAnalyzerTest {
         assertEquals(setOf("one", "two"), report.weakCredentialIds)
         assertEquals(setOf("one", "two"), report.reusedCredentialIds)
         assertEquals(setOf("one", "two"), report.staleCredentialIds)
-        assertEquals(3, report.risks.size)
+        assertEquals(2, report.risks.size)
+    }
+
+    @Test fun ageAloneDoesNotReduceScoreOrCreateARisk() {
+        val fresh = candidate("one", "unique")
+        val old = fresh.copy(updatedAt = now - 1000L * 24 * 60 * 60 * 1000)
+        val current = PasswordSecurityAnalyzer.analyze(listOf(fresh), now)
+        val historical = PasswordSecurityAnalyzer.analyze(listOf(old), now)
+        assertEquals(current.score, historical.score)
+        assertTrue(historical.risks.isEmpty())
+        assertEquals(setOf("one"), historical.staleCredentialIds)
     }
 
     @Test

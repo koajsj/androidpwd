@@ -23,6 +23,18 @@ object PasswordGenerator {
 
     private val random = SecureRandom()
 
+    fun generatePassphrase(wordCount: Int = 6, separator: String = "-"): String {
+        require(wordCount in 6..10) { "口令短语需要 6–10 个单词" }
+        require(separator in listOf("-", " ", ".")) { "分隔符无效" }
+        val words = MnemonicManager.WORD_LIST
+        return List(wordCount) { words[random.nextInt(words.size)] }.joinToString(separator)
+    }
+
+    fun passphraseEntropyBits(wordCount: Int): Double {
+        require(wordCount in 6..10)
+        return wordCount * kotlin.math.log2(MnemonicManager.WORD_LIST.size.toDouble())
+    }
+
     fun generate(options: GeneratorOptions): String {
         val pools = mutableListOf<String>()
         if (options.useLower) pools.add(LOWER)

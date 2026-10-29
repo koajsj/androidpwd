@@ -57,6 +57,7 @@ import com.offlinevault.security.PasswordStrengthChecker
 import com.offlinevault.ui.components.SectionCard
 import com.offlinevault.ui.components.StrengthMeter
 import com.offlinevault.ui.components.SectionHeading
+import com.offlinevault.ui.components.CustomFieldDetails
 import com.offlinevault.utils.ClipboardHelper
 import com.offlinevault.utils.Formatters
 import com.offlinevault.viewmodel.PasswordDetailViewModel
@@ -81,6 +82,7 @@ fun PasswordDetailScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var reveal by remember(passwordId) { mutableStateOf(false) }
+    var revealNote by remember(passwordId) { mutableStateOf(false) }
     var revealedHistoryId by remember(passwordId) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
@@ -90,6 +92,7 @@ fun PasswordDetailScreen(
     }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
         reveal = false
+        revealNote = false
         revealedHistoryId = null
         showHistory = false
         viewModel.clearHistory()
@@ -241,8 +244,8 @@ fun PasswordDetailScreen(
                         label = "网站",
                         value = current.url,
                         onCopy = {
-                            ClipboardHelper.copyPlain(context, "网址", current.url)
-                            toast("网址已复制")
+                            val copied = ClipboardHelper.copyPlain(context, "网址", current.url)
+                            toast(if (copied) "网址已复制" else "复制失败，请重试")
                         }
                     )
                 }
@@ -265,9 +268,16 @@ fun PasswordDetailScreen(
                     Column {
                         Text("备注", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(4.dp))
-                        Text(current.note, style = MaterialTheme.typography.bodyLarge)
+                        Text(if (revealNote) current.note else "••••••••", style = MaterialTheme.typography.bodyLarge)
+                        TextButton(onClick = { revealNote = !revealNote }) { Text(if (revealNote) "隐藏备注" else "显示备注") }
                     }
                 }
+            }
+
+            if (current.customFields.isNotEmpty()) {
+                Spacer(Modifier.height(24.dp))
+                SectionHeading("安全字段")
+                CustomFieldDetails(current.customFields) { message -> toast(message) }
             }
 
             if (historyCount > 0) {

@@ -259,6 +259,14 @@ class SettingsViewModel(
 
     // ---- Import / export ---------------------------------------------------
 
+    fun recordBackupWritten() {
+        viewModelScope.launch {
+            try { prefs.recordBackupWritten() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Export succeeded; a status-write failure must not negate it. */ }
+        }
+    }
+
     fun buildEncryptedJsonBackup(password: String, onResult: (ExportPayload) -> Unit) {
         val generation = SessionManager.sessionGeneration
         viewModelScope.launch {
@@ -272,7 +280,7 @@ class SettingsViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                ExportPayload(errorMessage = "无法创建加密备份")
+                ExportPayload(errorMessage = "无法创建加密备份，请检查记录是否损坏、字段过长或总大小超过 10 MB")
             }
             publishForSession(generation, { onResult(result) }) {
                 onResult(ExportPayload(errorMessage = "密码库已锁定，请重新解锁后导出"))

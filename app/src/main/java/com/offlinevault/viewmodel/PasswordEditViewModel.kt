@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.offlinevault.data.repository.PasswordRepository
 import com.offlinevault.data.repository.VaultRepository
 import com.offlinevault.data.model.TagCodec
+import com.offlinevault.data.model.CustomField
+import com.offlinevault.data.model.CustomFieldCodec
 import com.offlinevault.security.SessionManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +17,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class EditFormState(
     val id: String? = null,
@@ -25,7 +29,8 @@ data class EditFormState(
     val url: String = "",
     val tags: String = "",
     val note: String = "",
-    val isEditing: Boolean = false
+    val isEditing: Boolean = false,
+    val customFields: List<CustomField> = emptyList()
 )
 
 class PasswordEditViewModel(
@@ -46,6 +51,9 @@ class PasswordEditViewModel(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
+    private val _isReady = MutableStateFlow(false)
+    val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
+
     private var loadedKey: String? = null
     private var loadJob: Job? = null
     private var saveJob: Job? = null
@@ -57,6 +65,7 @@ class PasswordEditViewModel(
                     loadJob?.cancel()
                     saveJob?.cancel()
                     loadedKey = null
+                    _isReady.value = false
                     setInitialForm(EditFormState())
                     _errorMessage.value = null
                     _isSaving.value = false
@@ -71,15 +80,17 @@ class PasswordEditViewModel(
         if (loadedKey == key) return
         loadedKey = key
         loadJob?.cancel()
+        _isReady.value = false
+        setInitialForm(EditFormState(vaultId = vaultId, id = passwordId, isEditing = passwordId != null))
         _errorMessage.value = null
 
         if (passwordId == null) {
-            setInitialForm(EditFormState(vaultId = vaultId, isEditing = false))
+            _isReady.value = SessionManager.isUnlocked
         } else {
             loadJob = viewModelScope.launch {
                 try {
                     val generation = SessionManager.requireActiveSession()
-                    val item = passwordRepository.getDecrypted(passwordId)
+                    val item = withContext(Dispatchers.Default) { passwordRepository.getDecrypted(passwordId) }
                     if (loadedKey != key) return@launch
                     if (item != null) {
                         SessionManager.withActiveSessionNow(generation) {
@@ -92,8 +103,10 @@ class PasswordEditViewModel(
                                 url = item.url,
                                 tags = item.tags.joinToString("\n"),
                                 note = item.note,
-                                isEditing = true
+                                isEditing = true,
+                                customFields = item.customFields
                             ))
+                            _isReady.value = true
                         }
                     } else {
                         _errorMessage.value = "未找到这条密码"
@@ -108,6 +121,7 @@ class PasswordEditViewModel(
     }
 
     fun update(transform: (EditFormState) -> EditFormState) {
+        if (!_isReady.value || _isSaving.value || !SessionManager.isUnlocked) return
         _form.value = transform(_form.value)
     }
 
@@ -115,28 +129,43 @@ class PasswordEditViewModel(
 
     fun save(onResult: (Boolean, String?) -> Unit) {
         if (saveJob?.isActive == true) return
+        if (!_isReady.value) {
+            onResult(false, "密码尚未加载，请返回后重试")
+            return
+        }
         val f = _form.value
-        if (listOf(f.title, f.username, f.password, f.url, f.tags, f.note).all(String::isBlank)) {
+        try { CustomFieldCodec.validate(f.customFields) } catch (_: Exception) {
+            onResult(false, "请检查安全字段名称、长度和 TOTP 配置")
+            return
+        }
+        if (listOf(f.title, f.username, f.password, f.url, f.tags, f.note).all(String::isBlank) && f.customFields.isEmpty()) {
             onResult(false, "请至少填写标题、用户名、密码、网址、标签或备注中的一项")
             return
         }
         saveJob = viewModelScope.launch {
             _isSaving.value = true
             try {
+                val generation = SessionManager.requireActiveSession()
                 val tags = TagCodec.normalize(f.tags.lines())
-                passwordRepository.save(
-                    id = f.id,
-                    vaultId = f.vaultId,
-                    title = f.title.ifBlank { f.username.ifBlank { "无标题" } },
-                    username = f.username,
-                    password = f.password,
-                    url = f.url,
-                    tags = tags,
-                    note = f.note
-                )
-                vaultRepository.touch(f.vaultId)
-                initialForm.value = _form.value
-                onResult(true, null)
+                withContext(Dispatchers.Default) {
+                    SessionManager.requireActiveSession(generation)
+                    passwordRepository.save(
+                        id = f.id,
+                        vaultId = f.vaultId,
+                        title = f.title.ifBlank { f.username.ifBlank { "无标题" } },
+                        username = f.username,
+                        password = f.password,
+                        url = f.url,
+                        tags = tags,
+                        note = f.note,
+                        customFields = f.customFields
+                    )
+                    vaultRepository.touch(f.vaultId)
+                }
+                SessionManager.withActiveSessionNow(generation) {
+                    initialForm.value = f
+                    onResult(true, null)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

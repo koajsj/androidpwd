@@ -2,9 +2,13 @@ package com.offlinevault.data.repository
 
 import com.offlinevault.autofill.OriginMatcher
 import com.offlinevault.data.dao.PasswordDao
+import com.offlinevault.data.db.AppDatabase
+import androidx.room.withTransaction
 import com.offlinevault.data.model.PasswordEntity
 import com.offlinevault.data.model.PasswordHistoryEntity
 import com.offlinevault.data.model.TagCodec
+import com.offlinevault.data.model.CustomField
+import com.offlinevault.data.model.CustomFieldCodec
 import com.offlinevault.security.CryptoManager
 import com.offlinevault.security.EncryptedField
 import com.offlinevault.security.PasswordStrengthChecker
@@ -33,7 +37,8 @@ data class DecryptedPassword(
     val strengthScore: Int,
     val createdAt: Long,
     val updatedAt: Long,
-    val favorite: Boolean = false
+    val favorite: Boolean = false,
+    val customFields: List<CustomField> = emptyList()
 )
 
 /** A decrypted previous password, shown in the credential's history view. */
@@ -66,7 +71,7 @@ data class PasswordHealthCandidate(
     )
 }
 
-class PasswordRepository(private val passwordDao: PasswordDao) {
+class PasswordRepository(private val passwordDao: PasswordDao, private val database: AppDatabase? = null) {
 
     companion object {
         /** Trashed credentials are kept this many days before automatic permanent deletion. */
@@ -121,11 +126,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         SessionManager.withActiveSession { decryptInternal(entity) }
 
     /** Decrypts the password + note while an enclosing session gate is active. */
-    private fun decryptInternal(entity: PasswordEntity): DecryptedPassword {
+    private fun decryptInternal(entity: PasswordEntity, includeExtras: Boolean = true): DecryptedPassword {
         SessionManager.requireKey()
         val metadata = decryptMetadata(entity)
         val password = decryptRequired(entity.encryptedPassword, "password", entity.id)
-        val note = if (entity.encryptedNote.isBlank()) "" else
+        val note = if (!includeExtras || entity.encryptedNote.isBlank()) "" else
             decryptRequired(entity.encryptedNote, "note", entity.id)
         return DecryptedPassword(
             id = entity.id,
@@ -139,7 +144,10 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
             strengthScore = entity.strengthScore,
             createdAt = entity.createdAt,
             updatedAt = entity.updatedAt,
-            favorite = entity.favorite
+            favorite = entity.favorite,
+            customFields = if (!includeExtras || entity.encryptedCustomFields.isEmpty()) emptyList() else
+                CustomFieldCodec.decode(EncryptedField.decryptSecret(entity.encryptedCustomFields,
+                    EncryptedField.customFieldsContext(entity.id, entity.vaultId)))
         )
     }
 
@@ -158,9 +166,10 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         url: String,
         tags: List<String>,
         note: String,
-        favorite: Boolean? = null
+        favorite: Boolean? = null,
+        customFields: List<CustomField>? = null
     ): String = DatabaseWriteGate.withWrite {
-        saveInternal(id, vaultId, title, username, password, url, tags, note, favorite)
+        saveInternal(id, vaultId, title, username, password, url, tags, note, favorite, customFields)
     }
 
     private suspend fun saveInternal(
@@ -172,11 +181,14 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         url: String,
         tags: List<String>,
         note: String,
-        favorite: Boolean?
+        favorite: Boolean?,
+        customFields: List<CustomField>? = null
     ): String {
         return SessionManager.withActiveSession {
             val now = System.currentTimeMillis()
             val existing = id?.let { passwordDao.getById(it) }
+            require(id == null || existing != null) { "Credential no longer exists" }
+            require(existing == null || existing.deletedAt == 0L) { "Credential is in trash" }
             require(existing == null || existing.vaultId == vaultId) {
                 "Credential belongs to a different vault"
             }
@@ -199,7 +211,9 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                 createdAt = existing?.createdAt ?: now,
                 updatedAt = now,
                 deletedAt = existing?.deletedAt ?: 0L,
-                favorite = favorite ?: existing?.favorite ?: false
+                favorite = favorite ?: existing?.favorite ?: false,
+                encryptedCustomFields = customFields?.let { encryptCustomFields(it, entityId, vaultId) }
+                    ?: existing?.encryptedCustomFields.orEmpty()
             )
             if (existing != null) {
                 passwordDao.updateWithHistory(
@@ -224,14 +238,34 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     }
 
     /** Moves several credentials to the recycle bin at once (batch delete). */
-    suspend fun deleteMany(ids: List<String>) {
-        if (ids.isNotEmpty()) {
-            DatabaseWriteGate.withWrite {
-                SessionManager.withActiveSession {
-                    passwordDao.softDeleteMany(ids, System.currentTimeMillis())
-                }
-            }
+    suspend fun deleteMany(ids: List<String>, vaultId: String? = null): Int = batchWrite {
+        val uniqueIds = ids.distinct()
+        if (vaultId != null) require(uniqueIds.all { passwordDao.getById(it)?.vaultId == vaultId }) {
+            "所选记录不属于当前密码库"
         }
+        passwordDao.softDeleteBatch(uniqueIds, System.currentTimeMillis())
+    }
+
+    /** All-or-nothing within the selected vault. A missing/deleted row fails before any update. */
+    suspend fun updateMany(vaultId: String, ids: Set<String>, favorite: Boolean? = null, tags: List<String>? = null): Int =
+        batchWrite {
+            require(favorite != null || tags != null)
+            val rows = ids.map { requireNotNull(passwordDao.getById(it)) { "所选记录已不存在" } }
+            require(rows.all { it.vaultId == vaultId && it.deletedAt == 0L }) { "所选记录不属于当前密码库" }
+            val encodedTags = tags?.let(TagCodec::encode)
+            passwordDao.updateBatch(rows.map { row ->
+                row.copy(
+                    favorite = favorite ?: row.favorite,
+                    tags = encodedTags?.let { EncryptedField.encrypt(it, fieldContext(row.id, "tags")) } ?: row.tags
+                )
+            })
+            rows.size
+        }
+
+    /** Session validation runs before Room commits, so lock/cancellation rolls the batch back. */
+    private suspend fun <T> batchWrite(block: suspend () -> T): T = DatabaseWriteGate.withWrite {
+        database?.withTransaction { SessionManager.withActiveSession { block() } }
+            ?: SessionManager.withActiveSession { block() }
     }
 
     /** Pins/unpins a credential. Favorites sort to the top of the list. */
@@ -342,7 +376,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                         val url = EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url"))
                         val user = EncryptedField.decrypt(entity.username, fieldContext(entity.id, "username"))
                         OriginMatcher.sameTarget(url, identifier) &&
-                            user.equals(username.trim(), ignoreCase = true)
+                            user == username.trim()
                     } ?: false
                 }
                 if (existing != null) {
@@ -382,11 +416,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
         else -> OriginMatcher.hostFromUrl(identifier) ?: identifier.ifBlank { "已保存" }
     }
 
-    suspend fun allDecryptedSkippingCorrupt(): List<DecryptedPassword> =
+    suspend fun allDecryptedSkippingCorrupt(includeExtras: Boolean = true): List<DecryptedPassword> =
         SessionManager.withActiveSession {
             passwordDao.getAllOnce().mapNotNull {
                 coroutineContext.ensureActive()
-                skipCorrupt { decryptInternal(it) }
+                skipCorrupt { decryptInternal(it, includeExtras) }
             }
         }
 
@@ -469,7 +503,7 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                     EncryptedField.decrypt(entity.url, fieldContext(entity.id, "url"))
                 } ?: return@mapNotNull null
                 if (!urlMatches(url)) return@mapNotNull null
-                skipCorrupt { decryptInternal(entity) }
+                skipCorrupt { decryptInternal(entity, includeExtras = false) }
             }
         }
 
@@ -500,7 +534,8 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
                         strengthScore = PasswordStrengthChecker.evaluate(item.password).score,
                         createdAt = now,
                         updatedAt = now,
-                        favorite = item.favorite
+                        favorite = item.favorite,
+                        encryptedCustomFields = encryptCustomFields(item.customFields, entityId, vaultId)
                     )
                 }
                 passwordDao.insertAll(entities)
@@ -627,6 +662,11 @@ class PasswordRepository(private val passwordDao: PasswordDao) {
     }
 
     private fun fieldContext(id: String, field: String): String = "credential:$id:$field"
+
+    private fun encryptCustomFields(fields: List<CustomField>, id: String, vaultId: String): String {
+        val encoded = CustomFieldCodec.encode(fields)
+        return if (encoded.isEmpty()) "" else EncryptedField.encryptSecret(encoded, EncryptedField.customFieldsContext(id, vaultId))
+    }
 
     /**
      * Per-run salted fingerprint supports reuse grouping without retaining plaintext passwords or

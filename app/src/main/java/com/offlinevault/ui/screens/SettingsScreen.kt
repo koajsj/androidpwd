@@ -149,6 +149,7 @@ fun SettingsScreen(
         if (uri != null && json != null && SessionManager.isUnlocked) {
             scope.launch {
                 val ok = FileIo.writeText(context, uri, json)
+                if (ok) viewModel.recordBackupWritten()
                 toast(if (ok) "加密备份已保存" else "无法写入文件")
             }
         } else if (uri != null && json != null) {
@@ -528,7 +529,7 @@ fun SettingsScreen(
                 Column {
                     ClickSetting("导出加密备份（JSON）", "推荐") { askExportPassword = true }
                     SettingDivider()
-                    ClickSetting("导出表格（CSV）", "明文格式，请谨慎使用") { showCsvWarning = true }
+                    ClickSetting("高级：导出明文 CSV", "可能包含密码、恢复代码及 TOTP 密钥；优先使用加密 JSON") { showCsvWarning = true }
                     SettingDivider()
                     ClickSetting("导入（加密备份 / 浏览器 CSV）", "") { launchImport() }
                     SettingDivider()
@@ -753,7 +754,7 @@ fun SettingsScreen(
             onDismissRequest = { showCsvWarning = false },
             icon = { Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("导出明文 CSV？") },
-            text = { Text("CSV 文件将包含明文密码，任何能打开文件的人都可以查看。请仅导出到可信且安全的位置。") },
+            text = { Text("完整 CSV 包含明文密码、备注、安全字段和 TOTP 密钥，任何能打开文件的人都可以查看。浏览器 CSV 无法保留安全字段。请优先使用加密 JSON，且仅导出到可信位置。") },
             confirmButton = {
                 TextButton(onClick = {
                     showCsvWarning = false
